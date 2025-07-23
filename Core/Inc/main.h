@@ -59,6 +59,32 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define nFAULT_Pin GPIO_PIN_5
+#define nFAULT_GPIO_Port GPIOA
+#define Current_W_Pin GPIO_PIN_7
+#define Current_W_GPIO_Port GPIOA
+#define Current_U_Pin GPIO_PIN_0
+#define Current_U_GPIO_Port GPIOB
+#define Current_V_Pin GPIO_PIN_1
+#define Current_V_GPIO_Port GPIOB
+#define SLEEP_Pin GPIO_PIN_12
+#define SLEEP_GPIO_Port GPIOB
+#define SLEW_Pin GPIO_PIN_13
+#define SLEW_GPIO_Port GPIOB
+#define GAIN_Pin GPIO_PIN_14
+#define GAIN_GPIO_Port GPIOB
+#define PWM_ACTIVE_Pin GPIO_PIN_15
+#define PWM_ACTIVE_GPIO_Port GPIOB
+#define PWM_V_H_Pin GPIO_PIN_8
+#define PWM_V_H_GPIO_Port GPIOA
+#define PWM_U_H_Pin GPIO_PIN_9
+#define PWM_U_H_GPIO_Port GPIOA
+#define PWM_W_H_Pin GPIO_PIN_10
+#define PWM_W_H_GPIO_Port GPIOA
+#define EEPROM_RW__Pin GPIO_PIN_15
+#define EEPROM_RW__GPIO_Port GPIOA
+#define LED_Status_Pin GPIO_PIN_3
+#define LED_Status_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 
