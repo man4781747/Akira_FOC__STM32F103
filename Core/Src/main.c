@@ -126,7 +126,6 @@ int isSend = 1;
 void I2C_Scan_Bus(void)
 {
   uint8_t i;
-  uint8_t rx_buffer[1]; // 用于接收数据的缓冲区，实际扫描时可能不需要
   HAL_StatusTypeDef ret;
   // uint8_t StartMSG[] = "Starting I2C Scanning: \n";
   // HAL_UART_Transmit(&huart2, StartMSG, sizeof(StartMSG), 10000);
@@ -219,15 +218,16 @@ int main(void)
   M24C64_ReadData(M24C64_Data, 0, 32);
   M24C64_ReadData(M24C64_Data+32, 1, 32);
 
-
-  LowPassFilter_Init(&filter_U, 0.004f);
-  LowPassFilter_Init(&filter_V, 0.004f);
-  LowPassFilter_Init(&filter_W, 0.004f);
-  LowPassFilter_Init(&filter_Speed, 0.004f);
-  float test = 6.3; // 6.3
+  float test_ = 0.000095f;
+  LowPassFilter_Init(&filter_U, test_);
+  LowPassFilter_Init(&filter_V, test_);
+  LowPassFilter_Init(&filter_W, test_);
+  LowPassFilter_Init(&filter_Speed, 0.008f);
+  float test = 6.3 ; // 6.3
   PIDController_init(&PID__current_Id, test, test*50, 0, 0, 5);
   PIDController_init(&PID__current_Iq, test, test*50, 0, 0, 5);  
-  PIDController_init(&PID__velocity, 0.15, 0.515, 0, 0, 1);
+  // PIDController_init(&PID__velocity, 0.15, 0.515, 0, 0, 1);
+  PIDController_init(&PID__velocity, 0.153, 0.35 , 0., 0, .7);
 
   // adc設定
   // https://blog.csdn.net/tangxianyu/article/details/121149981
@@ -277,8 +277,7 @@ int main(void)
   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
 
   int logCount = 0;
-  float test_ = 0.1;
-  float speed__Target = 1;
+  float speed__Target = 8;
   float u_q__Target = 0.1;
   uint64_t old_ang_time = micros();
   uint64_t new_ang_time;
@@ -309,16 +308,16 @@ int main(void)
       
     ang_speed = LowPassFilter_Update(&filter_Speed, d_ang/dTime*2777.777777777778f);
     // ang_speed = d_ang/dTime*2777.777777777778f;
-    u_q__Target = PIDController_process(&PID__velocity, speed__Target-ang_speed);
+    
     ang_get = ang_temp;
     old_ang_time = new_ang_time;
     angToRad = ang_temp*7*0.01745329251f;
-    // current_W = LowPassFilter_Update(&filter_W, (float)(adc_dma_buffer[0]-adc_bios_W)/4096.0f*3.3f);
-    // current_U = LowPassFilter_Update(&filter_U, (float)(adc_dma_buffer[1]-adc_bios_U)/4096.0f*3.3f);
-    // current_V = LowPassFilter_Update(&filter_V, -current_U - current_W);
-    current_W = (adc_dma_buffer[0]-adc_bios_W)*0.0008056640625f;
-    current_U = (adc_dma_buffer[1]-adc_bios_U)*0.0008056640625f;
-    current_V = -current_U - current_W;
+    current_W = LowPassFilter_Update(&filter_W, (float)(adc_dma_buffer[0]-adc_bios_W)*0.0008056640625f);
+    current_U = LowPassFilter_Update(&filter_U, (float)(adc_dma_buffer[1]-adc_bios_U)*0.0008056640625f);
+    current_V = LowPassFilter_Update(&filter_V, -current_U - current_W);
+    // current_W = (adc_dma_buffer[0]-adc_bios_W)*0.0008056640625f;
+    // current_U = (adc_dma_buffer[1]-adc_bios_U)*0.0008056640625f;
+    // current_V = -current_U - current_W;
     I_alpha = current_V;
     I_beta = (current_U*2+current_V)*_1_SQRT3;
     cosRad = cos(angToRad);
@@ -326,8 +325,11 @@ int main(void)
     I_d = I_alpha*cosRad + I_beta*sinRad;
     I_q = -I_alpha*sinRad + I_beta*cosRad;
 
+    u_q__Target = PIDController_process(&PID__velocity, speed__Target-ang_speed);
+    // u_q__Target = 0.1;
     // uq = 1;
     uq = PIDController_process(&PID__current_Iq, u_q__Target - I_q);
+    // ud = 0;
     ud = PIDController_process(&PID__current_Id, -I_d);
     // if (ang_speed > 4 || ang_speed < -4) {
     //   ud = PIDController_process(&PID__current_Id, -I_d);
@@ -340,9 +342,9 @@ int main(void)
     printf("%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%.2f, %.2f, %.2f\n", 
       ang_temp,I_q, I_d,current_W, current_U, current_V, ang_speed, U2, U3
     );
-    if (logCount++ > 500) {
+    if (logCount++ > 25) {
       logCount = 0;
-      speed__Target += 2;
+      speed__Target += 0.1;
       if (speed__Target > 8) {
         speed__Target = -8;
       }
@@ -435,7 +437,7 @@ static void MX_ADC1_Init(void)
   */
   sConfig.Channel = ADC_CHANNEL_7;
   sConfig.Rank = ADC_REGULAR_RANK_1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_7CYCLES_5;
+  sConfig.SamplingTime = ADC_SAMPLETIME_13CYCLES_5;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -672,7 +674,7 @@ static void MX_TIM2_Init(void)
 
   /* USER CODE END TIM2_Init 1 */
   htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 71;
+  htim2.Init.Prescaler = 72-1;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim2.Init.Period = 65535;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
