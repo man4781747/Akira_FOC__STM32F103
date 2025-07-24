@@ -15,6 +15,14 @@
   *
   ******************************************************************************
   */
+
+/**
+ * 待研究閱讀:
+ *  - 不同 Timer 同步: https://shequ.stmicroelectronics.cn/thread-622883-1-1.html
+ *  - PWM觸發ADC轉換並經由DMA搬運 : https://ithelp.ithome.com.tw/articles/10282007
+ *  - DMA控制I2C : https://blog.csdn.net/KASIXA/article/details/136001090
+ *  - USB 2.0 使用 : https://blog.csdn.net/qq_36347513/article/details/127404464
+ */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
@@ -24,6 +32,7 @@
 #include <stdio.h> // for printf
 #include "setting.h"
 #include "driver.h"
+#include "M24C64_ctrl.h"
 #include "sensor.h"
 #include "micro_timer.h"
 #include "lowpass_filter.h"
@@ -51,10 +60,12 @@ DMA_HandleTypeDef hdma_adc1;
 
 CAN_HandleTypeDef hcan;
 
+I2C_HandleTypeDef hi2c1;
 I2C_HandleTypeDef hi2c2;
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim4;
 
 UART_HandleTypeDef huart1;
 DMA_HandleTypeDef hdma_usart1_tx;
@@ -73,27 +84,19 @@ static void MX_I2C2_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_TIM2_Init(void);
+static void MX_I2C1_Init(void);
+static void MX_TIM4_Init(void);
 /* USER CODE BEGIN PFP */
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-
-#define P_SLEW  GPIO_PIN_15
-#define P_GAIN  GPIO_PIN_14
-#define P_SLEEP GPIO_PIN_13
-#define P_MODE  GPIO_PIN_12
-
-uint8_t Buffer[25] = {0};
-uint8_t Space[] = " - ";
-uint8_t StartMSG[] = "Starting I2C Scanning: \r\n";
-uint8_t EndMSG[] = "Done! \r\n\r\n";
-
 #define ADC_BUF_SIZE    2 // DMA 緩衝區大小 (單個通道的採樣點數)
-uint16_t adc_dma_buffer[2];
+uint16_t adc_dma_buffer[ADC_BUF_SIZE];
 
 uint16_t adc_bios_W;
 uint16_t adc_bios_U;
+uint16_t adc_bios_V;
 
 float angShift = 0;
 
@@ -111,8 +114,45 @@ PIDController PID__current_Iq;
 PIDController PID__current_Iq;
 PIDController PID__velocity;
 
-char DMA__TX_char[13];
 int isSend = 1;
+
+void I2C_Scan_Bus(void)
+{
+  uint8_t i;
+  uint8_t rx_buffer[1]; // 用于接收数据的缓冲区，实际扫描时可能不需要
+  HAL_StatusTypeDef ret;
+  // uint8_t StartMSG[] = "Starting I2C Scanning: \n";
+  // HAL_UART_Transmit(&huart2, StartMSG, sizeof(StartMSG), 10000);
+  printf("Scanning I2C bus...\n");
+  for (i = 1; i < 128; i++) // 遍历所有可能的 7 位地址 (1 到 127)
+  {
+      // 尝试检查设备是否就绪。I2C地址需要左移1位，并设置为8位地址
+      // TrialByte: 用于发送的虚拟字节，通常可以为1，或者不需要实际的写入数据
+      // Timeout: 等待应答的超时时间
+      ret = HAL_I2C_IsDeviceReady(&hi2c1, (uint16_t)(i << 1), 3, 5);
+
+      if (ret == HAL_OK)
+      {
+        printf("Found device at address 0x%02X\n",i);
+      }
+      else if (ret == HAL_ERROR)
+      {
+          // HAL_I2C_IsDeviceReady返回HAL_ERROR通常表示总线错误，需要检查硬件连接
+          // 或I2C配置，但在扫描时，这可能是因为没有设备应答，所以通常不做特殊处理
+      }
+      else if (ret == HAL_BUSY)
+      {
+          // I2C总线忙，可以等待或重试
+      }
+      else if (ret == HAL_TIMEOUT)
+      {
+          // 超时，表示没有设备应答
+      }
+  }
+  // uint8_t EndMSG[] = "Done! \n";
+  // HAL_UART_Transmit(&huart2, EndMSG, sizeof(EndMSG), 10000);
+  printf("I2C scan complete.\n");
+}
 
 /* USER CODE END 0 */
 
@@ -152,20 +192,34 @@ int main(void)
   MX_USART1_UART_Init();
   MX_TIM1_Init();
   MX_TIM2_Init();
+  MX_I2C1_Init();
+  MX_TIM4_Init();
   /* USER CODE BEGIN 2 */
 
   // 時鐘計時設定
-
   init_micros_timer();
 
-  LowPassFilter_Init(&filter_U, 0.008f);
-  LowPassFilter_Init(&filter_V, 0.008f);
-  LowPassFilter_Init(&filter_W, 0.008f);
-  LowPassFilter_Init(&filter_Speed, 0.008f);
+  // M24C64
+  uint8_t M24C64_Data[100];
+  uint8_t WriteDataTest[100];
+  // HAL_I2C_Mem_Write 函數會處理 START, 從設備位址, 記憶體位址, 資料, STOP, ACK/NACK
+  for (int i =0;i<100;i++){
+    WriteDataTest[i] = i;
+    M24C64_Data[i] = 0;
+  }
+  M24C64_WriteData(WriteDataTest, 0, 32);
+  M24C64_WriteData(WriteDataTest+32, 1, 32);
+  M24C64_ReadData(M24C64_Data, 0, 32);
+  M24C64_ReadData(M24C64_Data+32, 1, 32);
 
-  PIDController_init(&PID__current_Id, 2.28, .05, 0, 20, 5);
-  PIDController_init(&PID__current_Iq, 2.28, .05, 0, 20, 5);
-  PIDController_init(&PID__velocity, 0.55, 0.1, 0, 20, 30);
+
+  LowPassFilter_Init(&filter_U, 0.004f);
+  LowPassFilter_Init(&filter_V, 0.004f);
+  LowPassFilter_Init(&filter_W, 0.004f);
+  LowPassFilter_Init(&filter_Speed, 0.004f);
+  PIDController_init(&PID__current_Id, 1, 0, 0, 3, 4);
+  PIDController_init(&PID__current_Iq, 5, 0, 0, 0, 4);  
+  PIDController_init(&PID__velocity, 1, 20, 0, 0, 5);
 
   // adc設定
   // https://blog.csdn.net/tangxianyu/article/details/121149981
@@ -185,42 +239,35 @@ int main(void)
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
   HAL_TIM_OC_Start_IT(&htim1, TIM_CHANNEL_4);
 
-  // HAL_GPIO_WritePin(GPIOB, P_GAIN, GPIO_PIN_RESET); // 0.25-V/A
+  HAL_TIM_Base_Start(&htim4); 
+  // HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_dma_buffer, ADC_BUF_SIZE);
+  HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_4);
 
   GPIO_InitTypeDef GPIO_InitStruct = {0}; // 1-V/A
-  GPIO_InitStruct.Pin = P_GAIN;
+  GPIO_InitStruct.Pin = GAIN_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_ANALOG; // 設定為類比模式 (高阻態)
   GPIO_InitStruct.Pull = GPIO_NOPULL;      // 不啟用內部上下拉電阻 (通常類比模式不需要)
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+  HAL_GPIO_Init(GAIN_GPIO_Port, &GPIO_InitStruct);
 
-  // HAL_GPIO_WritePin(GPIOB, P_GAIN, GPIO_PIN_SET); // 2-V/A
+  HAL_GPIO_WritePin(SLEW_GPIO_Port, SLEW_Pin, GPIO_PIN_SET);   // 200-V/µ
+  HAL_GPIO_WritePin(PWM_ACTIVE_GPIO_Port, PWM_ACTIVE_Pin, GPIO_PIN_RESET);
 
-  HAL_GPIO_WritePin(GPIOB, P_SLEW, GPIO_PIN_SET);   // 200-V/µ
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_4, GPIO_PIN_RESET); 
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_RESET);
-
-  HAL_GPIO_WritePin(GPIOB, P_MODE, GPIO_PIN_SET);   
-  
-  HAL_GPIO_WritePin(GPIOB, P_SLEEP, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(SLEEP_GPIO_Port, SLEEP_Pin, GPIO_PIN_RESET);
   HAL_Delay(10);
-  HAL_GPIO_WritePin(GPIOB, P_SLEEP, GPIO_PIN_SET);
-  HAL_Delay(1000);
+  HAL_GPIO_WritePin(SLEEP_GPIO_Port, SLEEP_Pin, GPIO_PIN_SET);
+  HAL_Delay(10);
   adc_bios_W = adc_dma_buffer[0];
   adc_bios_U = adc_dma_buffer[1];
   printf("ADC Bios: %d, %d\n", adc_bios_W, adc_bios_U);
-  HAL_Delay(1000);
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_SET);
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_4, GPIO_PIN_SET); 
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_SET);
-
+  HAL_GPIO_WritePin(PWM_ACTIVE_GPIO_Port, PWM_ACTIVE_Pin, GPIO_PIN_SET);
   SetAng(0);
-  HAL_Delay(100);
+  HAL_Delay(500);
   angShift = readAng(angShift);
 
   int logCount = 0;
-  float speed__Target = 5;
-  float u_q__Target = .5;
+  float test_ = 0.1;
+  float speed__Target = 2;
+  float u_q__Target = 0.1;
   uint64_t old_ang_time = micros();
   uint64_t new_ang_time;
   float ang_get = readAng(angShift);
@@ -243,56 +290,58 @@ int main(void)
     } else if (d_ang < -180) {
       d_ang += 360;
     }
-    // printf("%d.%d, %d\n", (int)(d_ang*100)/100, (int)(d_ang*100)%100, (int)(new_ang_time-old_ang_time));
-    // ang_speed = d_ang/(new_ang_time-old_ang_time)*2777.777777777778f;
-    ang_speed = LowPassFilter_Update(&filter_Speed, d_ang/(new_ang_time-old_ang_time)*2777.777777777778f);
-
-    u_q__Target = PIDController_process(&PID__velocity, speed__Target-ang_speed);
-
+    int dTime = (int)new_ang_time-(int)old_ang_time;
+    if (dTime < 0) {
+      dTime += 65535;
+    }
+      
+    ang_speed = LowPassFilter_Update(&filter_Speed, d_ang/dTime*2777.777777777778f);
+    // u_q__Target = PIDController_process(&PID__velocity, speed__Target-ang_speed);
     ang_get = ang_temp;
     old_ang_time = new_ang_time;
     double angToRad = ang_temp*7*0.01745329251f;
     current_W = LowPassFilter_Update(&filter_W, (float)(adc_dma_buffer[0]-adc_bios_W)/4096.0f*3.3f);
     current_U = LowPassFilter_Update(&filter_U, (float)(adc_dma_buffer[1]-adc_bios_U)/4096.0f*3.3f);
     current_V = LowPassFilter_Update(&filter_V, -current_U - current_W);
-    // float current_U = (float)(adc_dma_buffer[0]-adc_bios_W)/4096.0f*3300.0f;
-    // float current_V = (float)(adc_dma_buffer[1]-adc_bios_U)/4096.0f*3300.0f;
-    // float current_W = -current_U - current_V;
 
-    float I_alpha = current_U;
-    float I_beta = (current_V*2+current_U)*_1_SQRT3;
+    float I_alpha = current_V;
+    float I_beta = (current_U*2+current_V)*_1_SQRT3;
     double cosRad = cos(angToRad);
     double sinRad = sin(angToRad);
     float I_d = I_alpha*cosRad + I_beta*sinRad;
     float I_q = -I_alpha*sinRad + I_beta*cosRad;
-    
+  
+    u_q__Target = 0.1;
     float ud = PIDController_process(&PID__current_Id, -I_d);
     float uq = PIDController_process(&PID__current_Iq, u_q__Target-I_q);
-    // float ud = 1;
-    // float uq = 0;
+    // uq = 0.2;
+
+    logCount++;
+    if (logCount > 100) {
+      logCount = 0;
+      speed__Target += test_;
+    }
+    if (speed__Target > 5 || speed__Target < -5) {
+      test_ = -test_;
+    }
+    speed__Target = 1;
+    uq = PIDController_process(&PID__velocity, speed__Target-ang_speed);
+    ud = 0;
+
+    // float uq = 1;
 
     float u_alpha = ud*cosRad - uq*sinRad;
     float u_beta = ud*sinRad + uq*cosRad;
 
-    // SetAng(ang++);
-    int AngNow = (int)(ang_temp*100);
-
-
-    // float I_U = (float)(adc_dma_buffer[0]-adc_bios_W)/4096.0f*3300.0f;
-    // float I_V = (float)(adc_dma_buffer[1]-adc_bios_U)/4096.0f*3300.0f;
-    
-    // if (ang >= 360) {ang = 0;}
-    // if (++logCount > 1) {
-    //   // printf("%d.%d,%d,%d,%d,%d,%d\n",
-    //   //   AngNow/100, AngNow%100, (int)(current_U*1000), (int)(current_V*1000), (int)(current_W*1000),
-    //   //   (int)(I_d*1000), (int)(I_q*1000)
-    //   // );
-    //   // u_q__Target *= -1;
-    //   printf("%d.%d,%d.%d\n", AngNow/100, AngNow%100,((int)(ang_speed*100.))/100, ((int)(ang_speed*100.))%100);
-    //   logCount = 0;
-    // }
-    // printf("%d.%d,%d.%d\n", AngNow/100, AngNow%100,((int)(ang_speed*100.))/100, ((int)(ang_speed*100.))%100);
+    // printf("Ang:%.2f,Speed:%.2f,W:%.2f,U:%.2f,V:%.2f,Id:%.2f,Iq:%.2f\r\n", 
+    //   ang_temp, ang_speed,current_W, current_U, current_V,
+    //   I_d, I_q
+    // );
+    printf("%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%d, %.2f, %.2f\n", 
+      ang_speed,I_q, I_d,current_W, current_U, current_V, logCount, ud, uq
+    );
     Svpwm(u_alpha, u_beta);
+    HAL_Delay(1);
   }
   /* USER CODE END 3 */
 }
@@ -367,7 +416,7 @@ static void MX_ADC1_Init(void)
   hadc1.Init.ScanConvMode = ADC_SCAN_ENABLE;
   hadc1.Init.ContinuousConvMode = DISABLE;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
-  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIGCONV_T4_CC4;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
   hadc1.Init.NbrOfConversion = 2;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
@@ -433,6 +482,40 @@ static void MX_CAN_Init(void)
   /* USER CODE BEGIN CAN_Init 2 */
 
   /* USER CODE END CAN_Init 2 */
+
+}
+
+/**
+  * @brief I2C1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C1_Init(void)
+{
+
+  /* USER CODE BEGIN I2C1_Init 0 */
+
+  /* USER CODE END I2C1_Init 0 */
+
+  /* USER CODE BEGIN I2C1_Init 1 */
+
+  /* USER CODE END I2C1_Init 1 */
+  hi2c1.Instance = I2C1;
+  hi2c1.Init.ClockSpeed = 100000;
+  hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
+  hi2c1.Init.OwnAddress1 = 0;
+  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c1.Init.OwnAddress2 = 0;
+  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C1_Init 2 */
+
+  /* USER CODE END I2C1_Init 2 */
 
 }
 
@@ -514,7 +597,7 @@ static void MX_TIM1_Init(void)
   {
     Error_Handler();
   }
-  sMasterConfig.MasterOutputTrigger = TIM_TRGO_OC1;
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_ENABLE;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
   if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
   {
@@ -609,6 +692,71 @@ static void MX_TIM2_Init(void)
 }
 
 /**
+  * @brief TIM4 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM4_Init(void)
+{
+
+  /* USER CODE BEGIN TIM4_Init 0 */
+
+  /* USER CODE END TIM4_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_SlaveConfigTypeDef sSlaveConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  /* USER CODE BEGIN TIM4_Init 1 */
+
+  /* USER CODE END TIM4_Init 1 */
+  htim4.Instance = TIM4;
+  htim4.Init.Prescaler = 0;
+  htim4.Init.CounterMode = TIM_COUNTERMODE_CENTERALIGNED1;
+  htim4.Init.Period = 1800;
+  htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim4, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_Init(&htim4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sSlaveConfig.SlaveMode = TIM_SLAVEMODE_DISABLE;
+  sSlaveConfig.InputTrigger = TIM_TS_ITR0;
+  if (HAL_TIM_SlaveConfigSynchro(&htim4, &sSlaveConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_UPDATE;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim4, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim4, &sConfigOC, TIM_CHANNEL_4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM4_Init 2 */
+
+  /* USER CODE END TIM4_Init 2 */
+
+}
+
+/**
   * @brief USART1 Initialization Function
   * @param None
   * @retval None
@@ -678,27 +826,33 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4|GPIO_PIN_5, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, SLEEP_Pin|SLEW_Pin|GAIN_Pin|PWM_ACTIVE_Pin
+                          |LED_Status_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12|GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15
-                          |GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_5, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(EEPROM_RW__GPIO_Port, EEPROM_RW__Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pins : PA4 PA5 */
-  GPIO_InitStruct.Pin = GPIO_PIN_4|GPIO_PIN_5;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  /*Configure GPIO pin : nFAULT_Pin */
+  GPIO_InitStruct.Pin = nFAULT_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+  HAL_GPIO_Init(nFAULT_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PB12 PB13 PB14 PB15
-                           PB3 PB4 PB5 */
-  GPIO_InitStruct.Pin = GPIO_PIN_12|GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15
-                          |GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_5;
+  /*Configure GPIO pins : SLEEP_Pin SLEW_Pin GAIN_Pin PWM_ACTIVE_Pin
+                           LED_Status_Pin */
+  GPIO_InitStruct.Pin = SLEEP_Pin|SLEW_Pin|GAIN_Pin|PWM_ACTIVE_Pin
+                          |LED_Status_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : EEPROM_RW__Pin */
+  GPIO_InitStruct.Pin = EEPROM_RW__Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(EEPROM_RW__GPIO_Port, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
@@ -722,6 +876,11 @@ void TIM1_IRQHandler(void)
   HAL_TIM_IRQHandler(&htim1);
 }
 
+// void TIM4_IRQHandler(void)
+// {
+//   HAL_TIM_IRQHandler(&htim4);
+// }
+
 void HAL_TIM_OC_DelayElapsedCallback(TIM_HandleTypeDef *htim)
 {
   if (htim->Channel == HAL_TIM_ACTIVE_CHANNEL_4) // 檢查是否是 TIM1 的 Channel 4 觸發
@@ -729,7 +888,7 @@ void HAL_TIM_OC_DelayElapsedCallback(TIM_HandleTypeDef *htim)
     // 在這裡改變 GPIO 狀態
     // 假設你想控制 PA5 (連接到一個 LED)
     // HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
+    // HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
     HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_dma_buffer, ADC_BUF_SIZE);
     // HAL_Delay(1);
     // HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
@@ -741,19 +900,19 @@ void HAL_TIM_OC_DelayElapsedCallback(TIM_HandleTypeDef *htim)
 }
 
 // DMA 傳輸完成回呼函數 (Full Transfer Complete)
-void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
-{
-    if (hadc->Instance == ADC1) // 檢查是否是 ADC1 的 DMA 觸發
-    {
-      HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
-        // DMA 已經將所有數據傳輸到 adc_dma_buffer 中
-        // 你可以在這裡處理這批完整的數據
-        // 例如，計算平均值、應用濾波等
-        // printf("DMA Full Transfer Complete! %d, %d\r\n",adc_dma_buffer[0], adc_dma_buffer[1]);
-        // 如果是循環 DMA 模式，這裡會不斷被觸發（每次緩衝區滿時）
-        // 例如：printf("DMA Full Transfer Complete!\r\n");
-    }
-}
+// void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
+// {
+//     if (hadc->Instance == ADC1) // 檢查是否是 ADC1 的 DMA 觸發
+//     {
+//       // HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
+//         // DMA 已經將所有數據傳輸到 adc_dma_buffer 中
+//         // 你可以在這裡處理這批完整的數據
+//         // 例如，計算平均值、應用濾波等
+//         // printf("DMA Full Transfer Complete! %d, %d\r\n",adc_dma_buffer[0], adc_dma_buffer[1]);
+//         // 如果是循環 DMA 模式，這裡會不斷被觸發（每次緩衝區滿時）
+//         // 例如：printf("DMA Full Transfer Complete!\r\n");
+//     }
+// }
 /* USER CODE END 4 */
 
 /**
