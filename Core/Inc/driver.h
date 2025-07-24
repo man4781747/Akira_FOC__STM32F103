@@ -111,7 +111,7 @@ void Svpwm(float uAlpha, float uBeta){
   float Ta, Tb, Tc;
   int Sector;
 
-  // float center = 10./2;
+  // float center = 5.f;
   // U1 = uAlpha;
   // U2 = -0.5f * uAlpha + _SQRT3_2 * uBeta;
   // U3 = -0.5f * uAlpha - _SQRT3_2 * uBeta;

@@ -108,9 +108,16 @@ LowPassFilter filter_W;
 float current_W;
 LowPassFilter filter_Speed;
 
+float u_alpha, u_beta;
+float I_alpha, I_beta;
+float cosRad, sinRad;
+float I_d, I_q;
+float uq;
+float ud = 0;
+float ang_temp, angToRad;
+float U1, U2, U3;
 
 PIDController PID__current_Id;
-PIDController PID__current_Iq;
 PIDController PID__current_Iq;
 PIDController PID__velocity;
 
@@ -217,9 +224,10 @@ int main(void)
   LowPassFilter_Init(&filter_V, 0.004f);
   LowPassFilter_Init(&filter_W, 0.004f);
   LowPassFilter_Init(&filter_Speed, 0.004f);
-  PIDController_init(&PID__current_Id, 1, 0, 0, 3, 4);
-  PIDController_init(&PID__current_Iq, 5, 0, 0, 0, 4);  
-  PIDController_init(&PID__velocity, 1, 20, 0, 0, 5);
+  float test = 6.3; // 6.3
+  PIDController_init(&PID__current_Id, test, test*50, 0, 0, 5);
+  PIDController_init(&PID__current_Iq, test, test*50, 0, 0, 5);  
+  PIDController_init(&PID__velocity, 0.15, 0.515, 0, 0, 1);
 
   // adc設定
   // https://blog.csdn.net/tangxianyu/article/details/121149981
@@ -264,9 +272,13 @@ int main(void)
   HAL_Delay(500);
   angShift = readAng(angShift);
 
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
+
   int logCount = 0;
   float test_ = 0.1;
-  float speed__Target = 2;
+  float speed__Target = 1;
   float u_q__Target = 0.1;
   uint64_t old_ang_time = micros();
   uint64_t new_ang_time;
@@ -283,7 +295,7 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     new_ang_time = micros();
-    float ang_temp = readAng(angShift);
+    ang_temp = readAng(angShift);
     d_ang = ang_temp - ang_get;
     if (d_ang > 180) {
       d_ang -= 360;
@@ -296,52 +308,47 @@ int main(void)
     }
       
     ang_speed = LowPassFilter_Update(&filter_Speed, d_ang/dTime*2777.777777777778f);
-    // u_q__Target = PIDController_process(&PID__velocity, speed__Target-ang_speed);
+    // ang_speed = d_ang/dTime*2777.777777777778f;
+    u_q__Target = PIDController_process(&PID__velocity, speed__Target-ang_speed);
     ang_get = ang_temp;
     old_ang_time = new_ang_time;
-    double angToRad = ang_temp*7*0.01745329251f;
-    current_W = LowPassFilter_Update(&filter_W, (float)(adc_dma_buffer[0]-adc_bios_W)/4096.0f*3.3f);
-    current_U = LowPassFilter_Update(&filter_U, (float)(adc_dma_buffer[1]-adc_bios_U)/4096.0f*3.3f);
-    current_V = LowPassFilter_Update(&filter_V, -current_U - current_W);
+    angToRad = ang_temp*7*0.01745329251f;
+    // current_W = LowPassFilter_Update(&filter_W, (float)(adc_dma_buffer[0]-adc_bios_W)/4096.0f*3.3f);
+    // current_U = LowPassFilter_Update(&filter_U, (float)(adc_dma_buffer[1]-adc_bios_U)/4096.0f*3.3f);
+    // current_V = LowPassFilter_Update(&filter_V, -current_U - current_W);
+    current_W = (adc_dma_buffer[0]-adc_bios_W)*0.0008056640625f;
+    current_U = (adc_dma_buffer[1]-adc_bios_U)*0.0008056640625f;
+    current_V = -current_U - current_W;
+    I_alpha = current_V;
+    I_beta = (current_U*2+current_V)*_1_SQRT3;
+    cosRad = cos(angToRad);
+    sinRad = sin(angToRad);
+    I_d = I_alpha*cosRad + I_beta*sinRad;
+    I_q = -I_alpha*sinRad + I_beta*cosRad;
 
-    float I_alpha = current_V;
-    float I_beta = (current_U*2+current_V)*_1_SQRT3;
-    double cosRad = cos(angToRad);
-    double sinRad = sin(angToRad);
-    float I_d = I_alpha*cosRad + I_beta*sinRad;
-    float I_q = -I_alpha*sinRad + I_beta*cosRad;
-  
-    u_q__Target = 0.1;
-    float ud = PIDController_process(&PID__current_Id, -I_d);
-    float uq = PIDController_process(&PID__current_Iq, u_q__Target-I_q);
-    // uq = 0.2;
-
-    logCount++;
-    if (logCount > 100) {
-      logCount = 0;
-      speed__Target += test_;
-    }
-    if (speed__Target > 5 || speed__Target < -5) {
-      test_ = -test_;
-    }
-    speed__Target = 1;
-    uq = PIDController_process(&PID__velocity, speed__Target-ang_speed);
-    ud = 0;
-
-    // float uq = 1;
-
-    float u_alpha = ud*cosRad - uq*sinRad;
-    float u_beta = ud*sinRad + uq*cosRad;
-
-    // printf("Ang:%.2f,Speed:%.2f,W:%.2f,U:%.2f,V:%.2f,Id:%.2f,Iq:%.2f\r\n", 
-    //   ang_temp, ang_speed,current_W, current_U, current_V,
-    //   I_d, I_q
-    // );
-    printf("%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%d, %.2f, %.2f\n", 
-      ang_speed,I_q, I_d,current_W, current_U, current_V, logCount, ud, uq
+    // uq = 1;
+    uq = PIDController_process(&PID__current_Iq, u_q__Target - I_q);
+    ud = PIDController_process(&PID__current_Id, -I_d);
+    // if (ang_speed > 4 || ang_speed < -4) {
+    //   ud = PIDController_process(&PID__current_Id, -I_d);
+      
+    // } else {
+    //   ud = 0;
+    // }
+    u_alpha = ud*cosRad-uq*sinRad;
+    u_beta = ud*sinRad+uq*cosRad;
+    printf("%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%.2f, %.2f, %.2f\n", 
+      ang_temp,I_q, I_d,current_W, current_U, current_V, ang_speed, U2, U3
     );
+    if (logCount++ > 500) {
+      logCount = 0;
+      speed__Target += 2;
+      if (speed__Target > 8) {
+        speed__Target = -8;
+      }
+    }
+
     Svpwm(u_alpha, u_beta);
-    HAL_Delay(1);
   }
   /* USER CODE END 3 */
 }
@@ -428,7 +435,7 @@ static void MX_ADC1_Init(void)
   */
   sConfig.Channel = ADC_CHANNEL_7;
   sConfig.Rank = ADC_REGULAR_RANK_1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_13CYCLES_5;
+  sConfig.SamplingTime = ADC_SAMPLETIME_7CYCLES_5;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -900,19 +907,42 @@ void HAL_TIM_OC_DelayElapsedCallback(TIM_HandleTypeDef *htim)
 }
 
 // DMA 傳輸完成回呼函數 (Full Transfer Complete)
-// void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
-// {
-//     if (hadc->Instance == ADC1) // 檢查是否是 ADC1 的 DMA 觸發
-//     {
-//       // HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
-//         // DMA 已經將所有數據傳輸到 adc_dma_buffer 中
-//         // 你可以在這裡處理這批完整的數據
-//         // 例如，計算平均值、應用濾波等
-//         // printf("DMA Full Transfer Complete! %d, %d\r\n",adc_dma_buffer[0], adc_dma_buffer[1]);
-//         // 如果是循環 DMA 模式，這裡會不斷被觸發（每次緩衝區滿時）
-//         // 例如：printf("DMA Full Transfer Complete!\r\n");
-//     }
-// }
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
+{
+    if (hadc->Instance == ADC1) // 檢查是否是 ADC1 的 DMA 觸發
+    {
+      // ang_temp = readAng(angShift);
+      // angToRad = ang_temp*7*0.01745329251f;
+      // cosRad = cos(angToRad);
+      // sinRad = sin(angToRad);
+      // current_W = (adc_dma_buffer[0]-adc_bios_W)*0.0008056640625f;
+      // current_U = (adc_dma_buffer[1]-adc_bios_U)*0.0008056640625f;
+      // current_V = -current_U - current_W;
+      // I_alpha = current_V;
+      // I_beta = (current_U*2+current_V)*_1_SQRT3;
+      // I_d = I_alpha*cosRad + I_beta*sinRad;
+      // I_q = -I_alpha*sinRad + I_beta*cosRad;
+      // uq = 1;
+      // u_alpha = -uq*sinRad;
+      // u_beta = uq*cosRad;
+      // float center = 5.f;
+      // U1 = u_alpha;
+      // U2 = -0.5f * u_alpha + _SQRT3_2 * u_beta;
+      // U3 = -0.5f * u_alpha - _SQRT3_2 * u_beta;
+      // float Umin = fmin(U1, fmin(U2, U3));
+      // float Umax = fmax(U1, fmax(U2, U3));
+      // center -= (Umax+Umin) / 2;
+      // U1 += center;
+      // U2 += center;
+      // U3 += center;
+      // U1 /= 10;
+      // U2 /= 10;
+      // U3 /= 10;
+      // __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, U1*1800/2);
+      // __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, U2*1800/2);
+      // __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, U3*1800/2);
+    }
+}
 /* USER CODE END 4 */
 
 /**
