@@ -22,6 +22,7 @@
  *  - PWM觸發ADC轉換並經由DMA搬運 : https://ithelp.ithome.com.tw/articles/10282007
  *  - DMA控制I2C : https://blog.csdn.net/KASIXA/article/details/136001090
  *  - USB 2.0 使用 : https://blog.csdn.net/qq_36347513/article/details/127404464
+*   - PWM觸發ADC轉換並經由DMA搬運 : https://blog.51cto.com/u_16213585/12185463
  */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
@@ -29,6 +30,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include <stdint.h>
 #include <stdio.h> // for printf
 #include "setting.h"
 #include "driver.h"
@@ -37,6 +39,9 @@
 #include "micro_timer.h"
 #include "lowpass_filter.h"
 #include "PID_Ctrl.h"
+#include "qfplib-m3.h"
+#include "stm32f1xx_hal.h"
+#include "stm32f1xx_hal_tim.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -91,7 +96,7 @@ static void MX_TIM4_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-#define ADC_BUF_SIZE    2 // DMA 緩衝區大小 (單個通道的採樣點數)
+#define ADC_BUF_SIZE    3 // DMA 緩衝區大小 (單個通道的採樣點數)
 uint16_t adc_dma_buffer[ADC_BUF_SIZE];
 
 uint16_t adc_bios_W;
@@ -120,6 +125,11 @@ float U1, U2, U3;
 PIDController PID__current_Id;
 PIDController PID__current_Iq;
 PIDController PID__velocity;
+
+uint16_t pwmPluse_1[1] = {0};
+uint16_t pwmPluse_2[1] = {0};
+uint16_t pwmPluse_3[1] = {0};
+
 
 int isSend = 1;
 
@@ -245,6 +255,15 @@ int main(void)
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1); 
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
+
+  // HAL_TIM_PWM_Start_DMA(&htim1, TIM_CHANNEL_1, (uint32_t*)&pwmPluse_1, 1); 
+  // HAL_TIM_PWM_Start_DMA(&htim1, TIM_CHANNEL_2, (uint32_t*)&pwmPluse_2, 1);
+  // HAL_TIM_PWM_Start_DMA(&htim1, TIM_CHANNEL_3, (uint32_t*)&pwmPluse_3, 1);
+
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1); 
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
+
   HAL_TIM_OC_Start_IT(&htim1, TIM_CHANNEL_4);
 
   HAL_TIM_Base_Start(&htim4); 
@@ -269,6 +288,7 @@ int main(void)
   printf("ADC Bios: %d, %d\n", adc_bios_W, adc_bios_U);
   HAL_GPIO_WritePin(PWM_ACTIVE_GPIO_Port, PWM_ACTIVE_Pin, GPIO_PIN_SET);
   SetAng(0);
+  
   HAL_Delay(500);
   angShift = readAng(angShift);
 
@@ -277,7 +297,8 @@ int main(void)
   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
 
   int logCount = 0;
-  float speed__Target = 8;
+  float test123 = 0.001;
+  float speed__Target = 0;
   float u_q__Target = 0.1;
   uint64_t old_ang_time = micros();
   uint64_t new_ang_time;
@@ -311,46 +332,73 @@ int main(void)
     
     ang_get = ang_temp;
     old_ang_time = new_ang_time;
-    angToRad = ang_temp*7*0.01745329251f;
-    current_W = LowPassFilter_Update(&filter_W, (float)(adc_dma_buffer[0]-adc_bios_W)*0.0008056640625f);
-    current_U = LowPassFilter_Update(&filter_U, (float)(adc_dma_buffer[1]-adc_bios_U)*0.0008056640625f);
-    current_V = LowPassFilter_Update(&filter_V, -current_U - current_W);
-    // current_W = (adc_dma_buffer[0]-adc_bios_W)*0.0008056640625f;
-    // current_U = (adc_dma_buffer[1]-adc_bios_U)*0.0008056640625f;
-    // current_V = -current_U - current_W;
+    // angToRad = ang_temp*7*0.01745329251f;
+    angToRad = qfp_fmul(qfp_fmul(ang_temp, 7), 0.01745329251f);
+    // current_W = LowPassFilter_Update(&filter_W, (float)(adc_dma_buffer[0]-adc_bios_W)*0.0008056640625f);
+    // current_U = LowPassFilter_Update(&filter_U, (float)(adc_dma_buffer[1]-adc_bios_U)*0.0008056640625f);
+    // current_V = LowPassFilter_Update(&filter_V, -current_U - current_W);
+
+    current_W = qfp_fmul(adc_dma_buffer[0]-adc_bios_W, 0.0008056640625f);
+    current_U = qfp_fmul(adc_dma_buffer[1]-adc_bios_U, 0.0008056640625f);
+    current_V = qfp_fsub(-current_U, current_W);
     I_alpha = current_V;
-    I_beta = (current_U*2+current_V)*_1_SQRT3;
-    cosRad = cos(angToRad);
-    sinRad = sin(angToRad);
-    I_d = I_alpha*cosRad + I_beta*sinRad;
-    I_q = -I_alpha*sinRad + I_beta*cosRad;
+    I_beta = qfp_fmul(
+      qfp_fadd(
+        qfp_fmul(current_U,2), 
+        current_V
+      ),_1_SQRT3
+    );
+    // I_beta = qfp_fadd(current_U*2, current_V);
+
+    cosRad = qfp_fcos(angToRad);
+    sinRad = qfp_fsin(angToRad);
+    // cosRad = cos(angToRad);
+    // sinRad = sin(angToRad);
+
+    I_d = qfp_fadd( qfp_fmul(I_alpha, cosRad), qfp_fmul(I_beta, sinRad));
+    I_q = qfp_fsub( qfp_fmul(I_beta, cosRad), qfp_fmul(I_alpha, sinRad));
+    // I_d = I_alpha*cosRad + I_beta*sinRad;
+    // I_q = -I_alpha*sinRad + I_beta*cosRad;
+    
+
 
     u_q__Target = PIDController_process(&PID__velocity, speed__Target-ang_speed);
-    // u_q__Target = 0.1;
+    u_q__Target = 0.1;
     // uq = 1;
     uq = PIDController_process(&PID__current_Iq, u_q__Target - I_q);
-    // ud = 0;
-    ud = PIDController_process(&PID__current_Id, -I_d);
+    // uq = 3;
+    ud = 0;
+    // ud = PIDController_process(&PID__current_Id, -I_d);
     // if (ang_speed > 4 || ang_speed < -4) {
     //   ud = PIDController_process(&PID__current_Id, -I_d);
       
     // } else {
     //   ud = 0;
     // }
-    u_alpha = ud*cosRad-uq*sinRad;
-    u_beta = ud*sinRad+uq*cosRad;
-    printf("%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%.2f, %.2f, %.2f\n", 
-      ang_temp,I_q, I_d,current_W, current_U, current_V, ang_speed, U2, U3
-    );
-    if (logCount++ > 25) {
+    u_alpha = qfp_fsub( qfp_fmul(ud, cosRad), qfp_fmul(uq, sinRad));
+    u_beta = qfp_fadd( qfp_fmul(ud, sinRad), qfp_fmul(uq, cosRad));
+    // u_alpha = ud*cosRad-uq*sinRad;
+    // u_beta = ud*sinRad+uq*cosRad;
+
+    if (logCount++ > 5) {
+      // printf("%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%.2f, %.2f, %.2f\n", 
+      //   ang_temp,I_q, I_d,current_W, current_U, current_V, ang_speed, U2, U3
+      // );
       logCount = 0;
-      speed__Target += 0.1;
-      if (speed__Target > 8) {
-        speed__Target = -8;
+      speed__Target += test123;
+      if (speed__Target > 5 || speed__Target < -5) {
+        test123 = -test123;
       }
     }
-
+    // speed__Target = 0.5;
     Svpwm(u_alpha, u_beta);
+    printf("%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%.2f, %d\n", 
+      ang_temp,I_q, I_d,current_W, current_U, current_V, ang_speed, adc_dma_buffer[2]
+    );
+    // printf("%.2f,%.2f\n", 
+    //   ang_temp, angShift
+    // );
+    // HAL_Delay(1);
   }
   /* USER CODE END 3 */
 }
@@ -427,7 +475,7 @@ static void MX_ADC1_Init(void)
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIGCONV_T4_CC4;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.NbrOfConversion = 2;
+  hadc1.Init.NbrOfConversion = 3;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
   {
     Error_Handler();
@@ -447,6 +495,15 @@ static void MX_ADC1_Init(void)
   */
   sConfig.Channel = ADC_CHANNEL_8;
   sConfig.Rank = ADC_REGULAR_RANK_2;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_3;
+  sConfig.Rank = ADC_REGULAR_RANK_3;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -909,42 +966,70 @@ void HAL_TIM_OC_DelayElapsedCallback(TIM_HandleTypeDef *htim)
 }
 
 // DMA 傳輸完成回呼函數 (Full Transfer Complete)
-void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
-{
-    if (hadc->Instance == ADC1) // 檢查是否是 ADC1 的 DMA 觸發
-    {
-      // ang_temp = readAng(angShift);
-      // angToRad = ang_temp*7*0.01745329251f;
-      // cosRad = cos(angToRad);
-      // sinRad = sin(angToRad);
-      // current_W = (adc_dma_buffer[0]-adc_bios_W)*0.0008056640625f;
-      // current_U = (adc_dma_buffer[1]-adc_bios_U)*0.0008056640625f;
-      // current_V = -current_U - current_W;
-      // I_alpha = current_V;
-      // I_beta = (current_U*2+current_V)*_1_SQRT3;
-      // I_d = I_alpha*cosRad + I_beta*sinRad;
-      // I_q = -I_alpha*sinRad + I_beta*cosRad;
-      // uq = 1;
-      // u_alpha = -uq*sinRad;
-      // u_beta = uq*cosRad;
-      // float center = 5.f;
-      // U1 = u_alpha;
-      // U2 = -0.5f * u_alpha + _SQRT3_2 * u_beta;
-      // U3 = -0.5f * u_alpha - _SQRT3_2 * u_beta;
-      // float Umin = fmin(U1, fmin(U2, U3));
-      // float Umax = fmax(U1, fmax(U2, U3));
-      // center -= (Umax+Umin) / 2;
-      // U1 += center;
-      // U2 += center;
-      // U3 += center;
-      // U1 /= 10;
-      // U2 /= 10;
-      // U3 /= 10;
-      // __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, U1*1800/2);
-      // __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, U2*1800/2);
-      // __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, U3*1800/2);
-    }
-}
+// void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
+// {
+//     if (hadc->Instance == ADC1) // 檢查是否是 ADC1 的 DMA 觸發
+//     {
+//       // ang_temp = readAng(angShift);
+//       // angToRad = qfp_fmul(qfp_fmul(ang_temp, 7), 0.01745329251f);
+//       // current_W = qfp_fmul(adc_dma_buffer[0]-adc_bios_W, 0.0008056640625f);
+//       // current_U = qfp_fmul(adc_dma_buffer[1]-adc_bios_U, 0.0008056640625f);
+//       // current_V = qfp_fsub(-current_U, current_W);
+//       // I_alpha = current_V;
+//       // I_beta = qfp_fmul(
+//       //   qfp_fadd(
+//       //     qfp_fmul(current_U,2), 
+//       //     current_V
+//       //   ),_1_SQRT3
+//       // );
+//       // cosRad = qfp_fcos(angToRad);
+//       // sinRad = qfp_fsin(angToRad);
+//       // I_d = qfp_fadd( qfp_fmul(I_alpha, cosRad), qfp_fmul(I_beta, sinRad));
+//       // I_q = qfp_fsub( qfp_fmul(I_beta, cosRad), qfp_fmul(-I_alpha, sinRad));
+//       // uq = 1;
+//       // ud = 0;
+//       // u_alpha = qfp_fsub( qfp_fmul(ud, cosRad), qfp_fmul(uq, sinRad));
+//       // u_beta = qfp_fadd( qfp_fmul(ud, sinRad), qfp_fmul(uq, cosRad));
+//       // Svpwm(u_alpha, u_beta);
+//       // float U1, U2, U3;
+//       // float center = 5.f;
+//       // U1 = u_alpha;
+//       // U2 = qfp_fsub(qfp_fmul(_SQRT3_2, u_beta),qfp_fmul(u_alpha, 0.5f));
+//       // // U2 = -0.5f * uAlpha + _SQRT3_2 * uBeta;
+//       // U3 = qfp_fsub(qfp_fmul(-
+//       //   _SQRT3_2, u_beta),qfp_fmul(u_alpha, 0.5f));
+//       // U3 = -0.5f * uAlpha - _SQRT3_2 * uBeta;
+//       // float Umin = fmin(U1, fmin(U2, U3));
+//       // float Umax = fmax(U1, fmax(U2, U3));
+//       // center = qfp_fsub(
+//       //   center,
+//       //   qfp_fmul(
+//       //     qfp_fadd(Umax, Umin), 0.5f
+//       //   )
+//       // );
+//       // center -= (Umax+Umin) / 2;
+
+//       // U1 = qfp_fadd(U1, center);
+//       // // U1 += center;
+//       // U2 = qfp_fadd(U2, center);
+//       // // U2 += center;
+//       // U3 = qfp_fadd(U3, center);
+//       // // U3 += center;
+//       // U1 = qfp_fdiv(U1, 10);
+//       // // U1 /= 10;
+//       // U2 = qfp_fdiv(U2, 10);
+//       // // U2 /= 10;
+//       // U3 = qfp_fdiv(U3, 10);
+//       // if (U1>1) {U1=1.;}
+//       // else if (U1<0) {U1=0.;}
+//       // if (U2>1) {U2=1.;}
+//       // else if (U2<0) {U2=0.;}
+//       // if (U3>1) {U3=1.;}
+//       // else if (U3<0) {U3=0.;}
+
+
+//     }
+// }
 /* USER CODE END 4 */
 
 /**

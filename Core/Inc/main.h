@@ -59,6 +59,8 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define Ang_ADC_Pin GPIO_PIN_3
+#define Ang_ADC_GPIO_Port GPIOA
 #define nFAULT_Pin GPIO_PIN_5
 #define nFAULT_GPIO_Port GPIOA
 #define Current_W_Pin GPIO_PIN_7

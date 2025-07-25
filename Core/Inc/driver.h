@@ -3,13 +3,19 @@
 
 #include <math.h>
 #include "main.h"
+#include "qfplib-m3.h"
+
 
 #define _SQRT3_2 0.86602540378f
 #define _SQRT3 1.73205080757f
 
 // 由 main.c 提供
 extern TIM_HandleTypeDef htim1;
+// extern uint16_t pwmPluse_1;
+// extern uint16_t pwmPluse_2;
+// extern uint16_t pwmPluse_3;
 int period_ticksSet = 1800;
+float pwmNum = 900.f;
 float fullTime = 0.5;
 
 static inline void SetAng(float ang)
@@ -99,108 +105,128 @@ void runPWM(float Ta, float Tb, float Tc) {
   else if (Tb<0) {Tb=0.;}
   if (Tc>1) {Tc=1.;}
   else if (Tc<0) {Tc=0.;}
-
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, Ta*period_ticksSet/2);
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, Tb*period_ticksSet/2);
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, Tc*period_ticksSet/2);
+  
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, qfp_fmul(Ta, pwmNum));
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, qfp_fmul(Tb, pwmNum));
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, qfp_fmul(Tc, pwmNum));
 }
 
 void Svpwm(float uAlpha, float uBeta){
 	float U1, U2, U3;
-	float T1, T2, T3, T4, T5, T6, T7, Ts = 1.0f;
-  float Ta, Tb, Tc;
-  int Sector;
 
-  // float center = 5.f;
-  // U1 = uAlpha;
+
+  float center = 5.f;
+  U1 = uAlpha;
+  U2 = qfp_fsub(qfp_fmul(_SQRT3_2, uBeta),qfp_fmul(uAlpha, 0.5f));
   // U2 = -0.5f * uAlpha + _SQRT3_2 * uBeta;
+  U3 = qfp_fsub(qfp_fmul(-
+    _SQRT3_2, uBeta),qfp_fmul(uAlpha, 0.5f));
   // U3 = -0.5f * uAlpha - _SQRT3_2 * uBeta;
-  // float Umin = fmin(U1, fmin(U2, U3));
-  // float Umax = fmax(U1, fmax(U2, U3));
+  float Umin = fmin(U1, fmin(U2, U3));
+  float Umax = fmax(U1, fmax(U2, U3));
+  center = qfp_fsub(
+    center,
+    qfp_fmul(
+      qfp_fadd(Umax, Umin), 0.5f
+    )
+  );
   // center -= (Umax+Umin) / 2;
+
+  U1 = qfp_fadd(U1, center);
   // U1 += center;
+  U2 = qfp_fadd(U2, center);
   // U2 += center;
+  U3 = qfp_fadd(U3, center);
   // U3 += center;
+  U1 = qfp_fdiv(U1, 10);
   // U1 /= 10;
+  U2 = qfp_fdiv(U2, 10);
   // U2 /= 10;
+  U3 = qfp_fdiv(U3, 10);
   // U3 /= 10;
-  // runPWM(U1, U2, U3);
+  runPWM(U1, U2, U3);
 
-	U1 =  uBeta;
-	U2 =  uAlpha * _SQRT3_2 - uBeta / 2;
-	U3 = -uAlpha * _SQRT3_2 - uBeta / 2;
-	uint8_t A = 0, B = 0, C = 0;
-	if (U1 > 0) A = 1;
-	if (U2 > 0) B = 1;
-	if (U3 > 0) C = 1;
+  
+	// float T1, T2, T3, T4, T5, T6, T7, Ts = 1.0f;
+  // float Ta, Tb, Tc;
+  // int Sector;
+	// U1 =  uBeta;
+  // U2 = qfp_fsub(qfp_fmul(uAlpha, _SQRT3_2), qfp_fmul(uBeta, 0.5f));
+	// // U2 =  uAlpha * _SQRT3_2 - uBeta / 2;
+  // U3 = qfp_fsub(qfp_fmul(uAlpha, -_SQRT3_2), qfp_fmul(uBeta, 0.5f));
+	// // U3 = -uAlpha * _SQRT3_2 - uBeta / 2;
+	// uint8_t A = 0, B = 0, C = 0;
+	// if (U1 > 0) A = 1;
+	// if (U2 > 0) B = 1;
+	// if (U3 > 0) C = 1;
 
-	uint8_t N = 4*C + 2*B + A;
-	switch (N) {
-		case 3: Sector = 1; break;
-		case 1: Sector = 2; break;
-		case 5: Sector = 3; break;
-		case 4: Sector = 4; break;
-		case 6: Sector = 5; break;
-		case 2: Sector = 6; break;
-	}
+	// uint8_t N = 4*C + 2*B + A;
+	// switch (N) {
+	// 	case 3: Sector = 1; break;
+	// 	case 1: Sector = 2; break;
+	// 	case 5: Sector = 3; break;
+	// 	case 4: Sector = 4; break;
+	// 	case 6: Sector = 5; break;
+	// 	case 2: Sector = 6; break;
+	// }
 
-  float Ts_ = _SQRT3 * Ts / 10.;
-  switch (Sector) {
-    case 1:
-      T4 = Ts_ * U2;
-      T6 = Ts_ * U1;
-      T7 = (Ts - T4 - T6) / 2;
-      Ta = T4 + T6 + T7;
-      Tb = T6 + T7;
-      Tc = T7;
-      break;
-    case 2:
-      T2 = -Ts_ * U2;
-      T6 = -Ts_ * U3;
-      T7 = (Ts - T2 - T6) / 2;
-      Ta = T6 + T7;
-      Tb = T2 + T6 + T7;
-      Tc = T7;
-      break;
-    case 3:
-      T2 = Ts_ * U1;
-      T3 = Ts_ * U3;
-      T7 = (Ts - T2 - T3) / 2;
-      Ta = T7;
-      Tb = T2 + T3 + T7;
-      Tc = T3 + T7;
-      break;
-    case 4:
-      T1 = -Ts_ * U1;
-      T3 = -Ts_ * U2;
-      T7 = (Ts - T1 - T3) / 2;
-      Ta = T7;
-      Tb = T3 + T7;
-      Tc = T1 + T3 + T7;
-      break;
-    case 5:
-      T1 = Ts_ * U3;
-      T5 = Ts_ * U2;
-      T7 = (Ts - T1 - T5) / 2;
-      Ta = T5 + T7;
-      Tb = T7;
-      Tc = T1 + T5 + T7;
-      break;
-    case 6:
-      T4 = -Ts_ * U3;
-      T5 = -Ts_ * U1;
-      T7 = (Ts - T4 - T5) / 2;
-      Ta = T4 + T5 + T7;
-      Tb = T7;
-      Tc = T5 + T7;
-      break;
-    default:
-      Ta = 0;
-      Tb = 0;
-      Tc = 0;
-      break;
-  }
-  runPWM(Ta, Tb, Tc);
+  // float Ts_ = _SQRT3 * Ts / 10.;
+  // switch (Sector) {
+  //   case 1:
+  //     T4 = Ts_ * U2;
+  //     T6 = Ts_ * U1;
+  //     T7 = (Ts - T4 - T6) / 2;
+  //     Ta = T4 + T6 + T7;
+  //     Tb = T6 + T7;
+  //     Tc = T7;
+  //     break;
+  //   case 2:
+  //     T2 = -Ts_ * U2;
+  //     T6 = -Ts_ * U3;
+  //     T7 = (Ts - T2 - T6) / 2;
+  //     Ta = T6 + T7;
+  //     Tb = T2 + T6 + T7;
+  //     Tc = T7;
+  //     break;
+  //   case 3:
+  //     T2 = Ts_ * U1;
+  //     T3 = Ts_ * U3;
+  //     T7 = (Ts - T2 - T3) / 2;
+  //     Ta = T7;
+  //     Tb = T2 + T3 + T7;
+  //     Tc = T3 + T7;
+  //     break;
+  //   case 4:
+  //     T1 = -Ts_ * U1;
+  //     T3 = -Ts_ * U2;
+  //     T7 = (Ts - T1 - T3) / 2;
+  //     Ta = T7;
+  //     Tb = T3 + T7;
+  //     Tc = T1 + T3 + T7;
+  //     break;
+  //   case 5:
+  //     T1 = Ts_ * U3;
+  //     T5 = Ts_ * U2;
+  //     T7 = (Ts - T1 - T5) / 2;
+  //     Ta = T5 + T7;
+  //     Tb = T7;
+  //     Tc = T1 + T5 + T7;
+  //     break;
+  //   case 6:
+  //     T4 = -Ts_ * U3;
+  //     T5 = -Ts_ * U1;
+  //     T7 = (Ts - T4 - T5) / 2;
+  //     Ta = T4 + T5 + T7;
+  //     Tb = T7;
+  //     Tc = T5 + T7;
+  //     break;
+  //   default:
+  //     Ta = 0;
+  //     Tb = 0;
+  //     Tc = 0;
+  //     break;
+  // }
+  // runPWM(Ta, Tb, Tc);
 }
 
 

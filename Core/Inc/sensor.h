@@ -3,11 +3,13 @@
 
 #include <math.h>
 #include "main.h"
+#include "qfplib-m3.h"
 
 // 由 main.c 提供
 extern I2C_HandleTypeDef hi2c2;
 HAL_StatusTypeDef status;
 uint8_t accel_data[2];
+extern uint16_t adc_dma_buffer[];
 /**
  * 讀取機械角度
  */
@@ -23,6 +25,13 @@ float readAng(float shift) {
     return ang_;
   }
   return -1.f;
+  // float ang_ = qfp_fsub(qfp_fmul((float)adc_dma_buffer[2], 0.08791208791208792) ,shift);
+  // // float ang_ = ((float)(adc_dma_buffer[2])*0.08791208791208792) - shift; // 設置錯誤碼
+  // if (ang_ < 0.f) {
+  //   ang_ = qfp_fadd(ang_, 360.f);
+  //   // ang_ += 360;
+  // }
+  // return ang_;
 }
 
 #endif
