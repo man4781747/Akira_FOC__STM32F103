@@ -96,8 +96,10 @@ static void MX_TIM4_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-#define ADC_BUF_SIZE    3 // DMA 緩衝區大小 (單個通道的採樣點數)
-uint16_t adc_dma_buffer[ADC_BUF_SIZE];
+#define ADC_BUF_SIZE   2 // DMA 緩衝區大小 (單個通道的採樣點數)
+#define ADC_BUF_SIZE_BUFFER 10 
+uint16_t adc_dma_buffer[ADC_BUF_SIZE*ADC_BUF_SIZE_BUFFER];
+uint16_t adc_bios = 0;
 
 uint16_t adc_bios_W;
 uint16_t adc_bios_U;
@@ -234,8 +236,8 @@ int main(void)
   LowPassFilter_Init(&filter_W, test_);
   LowPassFilter_Init(&filter_Speed, 0.008f);
   float test = 6.3 ; // 6.3
-  PIDController_init(&PID__current_Id, test, test*50, 0, 0, 5);
-  PIDController_init(&PID__current_Iq, test, test*50, 0, 0, 5);  
+  PIDController_init(&PID__current_Id, test, test*50, 0, 0, 4.5);
+  PIDController_init(&PID__current_Iq, test, test*50, 0, 0, 4.5);  
   // PIDController_init(&PID__velocity, 0.15, 0.515, 0, 0, 1);
   PIDController_init(&PID__velocity, 0.153, 0.35 , 0., 0, .7);
 
@@ -297,7 +299,7 @@ int main(void)
   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
 
   int logCount = 0;
-  float test123 = 0.001;
+  float test123 = 1;
   float speed__Target = 0;
   float u_q__Target = 0.1;
   uint64_t old_ang_time = micros();
@@ -334,13 +336,25 @@ int main(void)
     old_ang_time = new_ang_time;
     // angToRad = ang_temp*7*0.01745329251f;
     angToRad = qfp_fmul(qfp_fmul(ang_temp, 7), 0.01745329251f);
-    // current_W = LowPassFilter_Update(&filter_W, (float)(adc_dma_buffer[0]-adc_bios_W)*0.0008056640625f);
-    // current_U = LowPassFilter_Update(&filter_U, (float)(adc_dma_buffer[1]-adc_bios_U)*0.0008056640625f);
+
+    uint16_t W_add = 0;
+    uint16_t U_add = 0;
+    for (int i = 0; i < ADC_BUF_SIZE_BUFFER; i++) {
+      W_add += adc_dma_buffer[2*i];
+      U_add += adc_dma_buffer[2*i+1];
+    }
+    W_add /= ADC_BUF_SIZE_BUFFER;
+    U_add /= ADC_BUF_SIZE_BUFFER;
+
+    current_W = qfp_fmul(W_add-adc_bios_W, 0.0008056640625f);
+    current_U = qfp_fmul(U_add-adc_bios_U, 0.0008056640625f);
+    current_V = qfp_fsub(-current_U, current_W);
+    // current_W = LowPassFilter_Update(&filter_W, (float)(W_add-adc_bios_W)*0.0008056640625f);
+    // current_U = LowPassFilter_Update(&filter_U, (float)(U_add-adc_bios_U)*0.0008056640625f);
     // current_V = LowPassFilter_Update(&filter_V, -current_U - current_W);
 
-    current_W = qfp_fmul(adc_dma_buffer[0]-adc_bios_W, 0.0008056640625f);
-    current_U = qfp_fmul(adc_dma_buffer[1]-adc_bios_U, 0.0008056640625f);
-    current_V = qfp_fsub(-current_U, current_W);
+
+
     I_alpha = current_V;
     I_beta = qfp_fmul(
       qfp_fadd(
@@ -361,14 +375,14 @@ int main(void)
     // I_q = -I_alpha*sinRad + I_beta*cosRad;
     
 
-
+    // speed__Target = 5;
     u_q__Target = PIDController_process(&PID__velocity, speed__Target-ang_speed);
-    u_q__Target = 0.1;
+    // u_q__Target = 0.1;
     // uq = 1;
     uq = PIDController_process(&PID__current_Iq, u_q__Target - I_q);
     // uq = 3;
-    ud = 0;
-    // ud = PIDController_process(&PID__current_Id, -I_d);
+    // ud = 0;
+    ud = PIDController_process(&PID__current_Id, -I_d);
     // if (ang_speed > 4 || ang_speed < -4) {
     //   ud = PIDController_process(&PID__current_Id, -I_d);
       
@@ -380,21 +394,24 @@ int main(void)
     // u_alpha = ud*cosRad-uq*sinRad;
     // u_beta = ud*sinRad+uq*cosRad;
 
-    if (logCount++ > 5) {
+    if (logCount++ > 500) {
       // printf("%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%.2f, %.2f, %.2f\n", 
       //   ang_temp,I_q, I_d,current_W, current_U, current_V, ang_speed, U2, U3
       // );
       logCount = 0;
       speed__Target += test123;
-      if (speed__Target > 5 || speed__Target < -5) {
-        test123 = -test123;
+      if (speed__Target > 10 || speed__Target < -10) {
+        speed__Target = -speed__Target;
       }
+      // if (speed__Target > 5 || speed__Target < -5) {
+      //   test123 = -test123;
+      // }
     }
-    // speed__Target = 0.5;
+    speed__Target = 10;
     Svpwm(u_alpha, u_beta);
-    printf("%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%.2f, %d\n", 
-      ang_temp,I_q, I_d,current_W, current_U, current_V, ang_speed, adc_dma_buffer[2]
-    );
+    // printf("%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%.2f, %d\n", 
+    //   ang_temp,I_q, I_d,current_W, current_U, current_V, ang_speed, adc_dma_buffer[2]
+    // );
     // printf("%.2f,%.2f\n", 
     //   ang_temp, angShift
     // );
@@ -475,7 +492,7 @@ static void MX_ADC1_Init(void)
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIGCONV_T4_CC4;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.NbrOfConversion = 3;
+  hadc1.Init.NbrOfConversion = 2;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
   {
     Error_Handler();
@@ -495,15 +512,6 @@ static void MX_ADC1_Init(void)
   */
   sConfig.Channel = ADC_CHANNEL_8;
   sConfig.Rank = ADC_REGULAR_RANK_2;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure Regular Channel
-  */
-  sConfig.Channel = ADC_CHANNEL_3;
-  sConfig.Rank = ADC_REGULAR_RANK_3;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -955,7 +963,11 @@ void HAL_TIM_OC_DelayElapsedCallback(TIM_HandleTypeDef *htim)
     // 假設你想控制 PA5 (連接到一個 LED)
     // HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
     // HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
-    HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_dma_buffer, ADC_BUF_SIZE);
+    HAL_ADC_Start_DMA(&hadc1, (uint32_t*)(adc_dma_buffer+adc_bios*2), ADC_BUF_SIZE);
+    adc_bios ++;
+    if (adc_bios >= ADC_BUF_SIZE_BUFFER) {
+      adc_bios = 0;
+    }
     // HAL_Delay(1);
     // HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
 
