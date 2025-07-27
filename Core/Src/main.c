@@ -106,6 +106,9 @@ uint16_t adc_bios_U;
 uint16_t adc_bios_V;
 
 float angShift = 0;
+float positon_Target = 0;
+
+float Id_Target = 0;
 
 LowPassFilter filter_U;
 float current_U;
@@ -127,10 +130,16 @@ float U1, U2, U3;
 PIDController PID__current_Id;
 PIDController PID__current_Iq;
 PIDController PID__velocity;
+PIDController PID__position;
 
 uint16_t pwmPluse_1[1] = {0};
 uint16_t pwmPluse_2[1] = {0};
 uint16_t pwmPluse_3[1] = {0};
+
+// 定義傳輸標頭和數據
+CAN_TxHeaderTypeDef TxHeader;
+uint8_t TxData[8] = {};
+uint32_t TxMailbox; // 用來儲存發送的郵箱號
 
 
 int isSend = 1;
@@ -235,11 +244,37 @@ int main(void)
   LowPassFilter_Init(&filter_V, test_);
   LowPassFilter_Init(&filter_W, test_);
   LowPassFilter_Init(&filter_Speed, 0.008f);
-  float test = 6.3 ; // 6.3
-  PIDController_init(&PID__current_Id, test, test*50, 0, 0, 4.5);
+
+  /**
+   * https://www.bilibili.com/video/BV1VT421k782/?spm_id_from=333.337.search-card.all.click&vd_source=43115a2a3d33edfb64a16bbcb1b2fda3
+   * R = 5.1
+   * L = 0.0028
+   * Kp = 0.0028(L)*350*2*pi = 6.157521601035994
+   * Ki = 5.1*350*2*pi/10000 = 1.121548577331556
+   */
+
+  // PIDController_init(&PID__current_Id, 6.157521601035994, 1.121548577331556, 0, 0, 4.5);
+  // PIDController_init(&PID__current_Iq, 6.157521601035994, 1.121548577331556, 0, 0, 4.5);  
+
+  /**
+   * 
+   * 
+   */
+  float test = 5 ; // 6.3  /// 50
+  PIDController_init(&PID__current_Id, test, test*50, 0, 0, 4.5);  
   PIDController_init(&PID__current_Iq, test, test*50, 0, 0, 4.5);  
+
+   
+  // PIDController_init(&PID__current_Id, test, test*55, 0.00012, 0, 4.5);
+  // PIDController_init(&PID__current_Id, 4, 4*240, 0, 0, 4.5);
+  // PIDController_init(&PID__current_Iq, 4, 4*240, 0, 0, 4.5);  
   // PIDController_init(&PID__velocity, 0.15, 0.515, 0, 0, 1);
+
+
+
+
   PIDController_init(&PID__velocity, 0.153, 0.35 , 0., 0, .7);
+  PIDController_init(&PID__position,0.06, 1.4 ,0.001,0,10);
 
   // adc設定
   // https://blog.csdn.net/tangxianyu/article/details/121149981
@@ -248,7 +283,7 @@ int main(void)
 
 
   // https://blog.csdn.net/qq_45854134/article/details/134181326
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);    
   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, htim1.Init.Period);
@@ -307,6 +342,12 @@ int main(void)
   float ang_get = readAng(angShift);
   float d_ang;
   float ang_speed = 0;
+
+
+  // 啟動CAN週邊
+  HAL_CAN_Start(&hcan);
+
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -374,15 +415,50 @@ int main(void)
     // I_d = I_alpha*cosRad + I_beta*sinRad;
     // I_q = -I_alpha*sinRad + I_beta*cosRad;
     
+    float d_ang = positon_Target - ang_temp;
+    if (d_ang > 180) {
+      d_ang = 360 - d_ang;
+    } else if (d_ang < -180) {
 
+      d_ang += 360;
+    }
+
+    if (logCount++ > 500) {
+      // printf("%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%.2f, %.2f, %.2f\n", 
+      //   ang_temp,I_q, I_d,current_W, current_U, current_V, ang_speed, U2, U3
+      // );
+      positon_Target += 30;
+      if (positon_Target >= 360) {
+        positon_Target -= 360;
+      }
+      logCount = 0;
+      // speed__Target += test123;
+      // if (speed__Target > 10 || speed__Target < -10) {
+      //   speed__Target = -speed__Target;
+      // }
+      // if (speed__Target > 5 || speed__Target < -5) {
+      //   test123 = -test123;
+      // }
+      // u_q__Target += 0.1;
+      // if (u_q__Target > 0.75) {
+      //   u_q__Target = -0.75;
+      // }
+    } 
+
+
+
+    speed__Target = PIDController_process(&PID__position, d_ang);
     // speed__Target = 5;
+
     u_q__Target = PIDController_process(&PID__velocity, speed__Target-ang_speed);
     // u_q__Target = 0.1;
-    // uq = 1;
+
+    // uq = 0;
     uq = PIDController_process(&PID__current_Iq, u_q__Target - I_q);
-    // uq = 3;
+
     // ud = 0;
-    ud = PIDController_process(&PID__current_Id, -I_d);
+    Id_Target = 0;
+    ud = PIDController_process(&PID__current_Id, Id_Target-I_d);
     // if (ang_speed > 4 || ang_speed < -4) {
     //   ud = PIDController_process(&PID__current_Id, -I_d);
       
@@ -394,28 +470,42 @@ int main(void)
     // u_alpha = ud*cosRad-uq*sinRad;
     // u_beta = ud*sinRad+uq*cosRad;
 
-    if (logCount++ > 500) {
-      // printf("%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%.2f, %.2f, %.2f\n", 
-      //   ang_temp,I_q, I_d,current_W, current_U, current_V, ang_speed, U2, U3
-      // );
-      logCount = 0;
-      speed__Target += test123;
-      if (speed__Target > 10 || speed__Target < -10) {
-        speed__Target = -speed__Target;
-      }
-      // if (speed__Target > 5 || speed__Target < -5) {
-      //   test123 = -test123;
-      // }
-    }
-    speed__Target = 10;
+
+    // speed__Target = 0.5;
     Svpwm(u_alpha, u_beta);
-    // printf("%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%.2f, %d\n", 
-    //   ang_temp,I_q, I_d,current_W, current_U, current_V, ang_speed, adc_dma_buffer[2]
-    // );
-    // printf("%.2f,%.2f\n", 
-    //   ang_temp, angShift
-    // );
-    // HAL_Delay(1);
+    printf("%.2f,%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%.2f, %.2f, %.2f\n", 
+      ang_temp,positon_Target,I_q, I_d,current_W, current_U, current_V, ang_speed, Id_Target, u_q__Target
+
+    );
+
+
+
+
+    // 設定傳輸標頭
+    TxHeader.StdId = 0x123; // 你的CAN ID (標準ID)
+    TxHeader.RTR = CAN_RTR_DATA; // 數據幀
+    TxHeader.IDE = CAN_ID_STD; // 標準ID
+    TxHeader.DLC = 8; // 數據長度，最多8個位元組
+
+    // 設定要發送的數據
+    TxData[0] = TxData[0] + 1;
+    for (int i = 0 ; i< 6 ; i++){
+      if (TxData[i] == 0xFF) {
+        TxData[i] = 0x00; // 重置計數器
+        TxData[i+1] = TxData[i+1] + 1;
+      }
+    }
+    if (TxData[7] == 0xFF) {
+      TxData[0] = 0x00; // 重置計數器
+    }
+
+
+    // 發送訊息
+    if (HAL_CAN_AddTxMessage(&hcan, &TxHeader, TxData, &TxMailbox) != HAL_OK) {
+        // 處理發送失敗的情況
+        printf("Cnan send message failed!\n");
+      // Error_Handler();
+    }
   }
   /* USER CODE END 3 */
 }
@@ -538,11 +628,11 @@ static void MX_CAN_Init(void)
 
   /* USER CODE END CAN_Init 1 */
   hcan.Instance = CAN1;
-  hcan.Init.Prescaler = 16;
+  hcan.Init.Prescaler = 6;
   hcan.Init.Mode = CAN_MODE_NORMAL;
   hcan.Init.SyncJumpWidth = CAN_SJW_1TQ;
-  hcan.Init.TimeSeg1 = CAN_BS1_1TQ;
-  hcan.Init.TimeSeg2 = CAN_BS2_1TQ;
+  hcan.Init.TimeSeg1 = CAN_BS1_3TQ;
+  hcan.Init.TimeSeg2 = CAN_BS2_2TQ;
   hcan.Init.TimeTriggeredMode = DISABLE;
   hcan.Init.AutoBusOff = DISABLE;
   hcan.Init.AutoWakeUp = DISABLE;
@@ -959,21 +1049,19 @@ void HAL_TIM_OC_DelayElapsedCallback(TIM_HandleTypeDef *htim)
 {
   if (htim->Channel == HAL_TIM_ACTIVE_CHANNEL_4) // 檢查是否是 TIM1 的 Channel 4 觸發
   {
-    // 在這裡改變 GPIO 狀態
-    // 假設你想控制 PA5 (連接到一個 LED)
-    // HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
-    // HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);
+    /**
+     * @brief 有感流程需要量測ADC
+     * 
+     */
     HAL_ADC_Start_DMA(&hadc1, (uint32_t*)(adc_dma_buffer+adc_bios*2), ADC_BUF_SIZE);
     adc_bios ++;
     if (adc_bios >= ADC_BUF_SIZE_BUFFER) {
       adc_bios = 0;
     }
-    // HAL_Delay(1);
-    // HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
 
-    // 如果需要持續在每個週期中點觸發，你可能需要重新設定下一個比較值
-    // 對於這個應用，因為定時器是循環計數的，這個回呼函數會在每次達到 CCR2 時被觸發
-    // 所以通常不需要手動重新設定 CCR2
+    
+
+
   }
 }
 
@@ -982,8 +1070,8 @@ void HAL_TIM_OC_DelayElapsedCallback(TIM_HandleTypeDef *htim)
 // {
 //     if (hadc->Instance == ADC1) // 檢查是否是 ADC1 的 DMA 觸發
 //     {
-//       // ang_temp = readAng(angShift);
-//       // angToRad = qfp_fmul(qfp_fmul(ang_temp, 7), 0.01745329251f);
+//       ang_temp = readAng(angShift);
+//       angToRad = qfp_fmul(qfp_fmul(ang_temp, 7), 0.01745329251f);
 //       // current_W = qfp_fmul(adc_dma_buffer[0]-adc_bios_W, 0.0008056640625f);
 //       // current_U = qfp_fmul(adc_dma_buffer[1]-adc_bios_U, 0.0008056640625f);
 //       // current_V = qfp_fsub(-current_U, current_W);
@@ -998,46 +1086,38 @@ void HAL_TIM_OC_DelayElapsedCallback(TIM_HandleTypeDef *htim)
 //       // sinRad = qfp_fsin(angToRad);
 //       // I_d = qfp_fadd( qfp_fmul(I_alpha, cosRad), qfp_fmul(I_beta, sinRad));
 //       // I_q = qfp_fsub( qfp_fmul(I_beta, cosRad), qfp_fmul(-I_alpha, sinRad));
-//       // uq = 1;
-//       // ud = 0;
-//       // u_alpha = qfp_fsub( qfp_fmul(ud, cosRad), qfp_fmul(uq, sinRad));
-//       // u_beta = qfp_fadd( qfp_fmul(ud, sinRad), qfp_fmul(uq, cosRad));
+//       uq = 1;
+//       ud = 0;
+//       u_alpha = qfp_fsub( qfp_fmul(ud, cosRad), qfp_fmul(uq, sinRad));
+//       u_beta = qfp_fadd( qfp_fmul(ud, sinRad), qfp_fmul(uq, cosRad));
 //       // Svpwm(u_alpha, u_beta);
-//       // float U1, U2, U3;
-//       // float center = 5.f;
-//       // U1 = u_alpha;
-//       // U2 = qfp_fsub(qfp_fmul(_SQRT3_2, u_beta),qfp_fmul(u_alpha, 0.5f));
-//       // // U2 = -0.5f * uAlpha + _SQRT3_2 * uBeta;
-//       // U3 = qfp_fsub(qfp_fmul(-
-//       //   _SQRT3_2, u_beta),qfp_fmul(u_alpha, 0.5f));
-//       // U3 = -0.5f * uAlpha - _SQRT3_2 * uBeta;
-//       // float Umin = fmin(U1, fmin(U2, U3));
-//       // float Umax = fmax(U1, fmax(U2, U3));
-//       // center = qfp_fsub(
-//       //   center,
-//       //   qfp_fmul(
-//       //     qfp_fadd(Umax, Umin), 0.5f
-//       //   )
-//       // );
-//       // center -= (Umax+Umin) / 2;
+//       float U1, U2, U3;
+//       float center = 5.f;
+//       U1 = u_alpha;
+//       U2 = qfp_fsub(qfp_fmul(_SQRT3_2, u_beta),qfp_fmul(u_alpha, 0.5f));
+//       U3 = qfp_fsub(qfp_fmul(-_SQRT3_2, u_beta),qfp_fmul(u_alpha, 0.5f));
+//       float Umin = fmin(U1, fmin(U2, U3));
+//       float Umax = fmax(U1, fmax(U2, U3));
+//       center = qfp_fsub(center,qfp_fmul(qfp_fadd(Umax, Umin), 0.5f));
+//       center -= (Umax+Umin) / 2;
 
-//       // U1 = qfp_fadd(U1, center);
-//       // // U1 += center;
-//       // U2 = qfp_fadd(U2, center);
-//       // // U2 += center;
-//       // U3 = qfp_fadd(U3, center);
-//       // // U3 += center;
-//       // U1 = qfp_fdiv(U1, 10);
-//       // // U1 /= 10;
-//       // U2 = qfp_fdiv(U2, 10);
-//       // // U2 /= 10;
-//       // U3 = qfp_fdiv(U3, 10);
-//       // if (U1>1) {U1=1.;}
-//       // else if (U1<0) {U1=0.;}
-//       // if (U2>1) {U2=1.;}
-//       // else if (U2<0) {U2=0.;}
-//       // if (U3>1) {U3=1.;}
-//       // else if (U3<0) {U3=0.;}
+//       U1 = qfp_fadd(U1, center);
+//       // U1 += center;
+//       U2 = qfp_fadd(U2, center);
+//       // U2 += center;
+//       U3 = qfp_fadd(U3, center);
+//       // U3 += center;
+//       U1 = qfp_fdiv(U1, 10);
+//       // U1 /= 10;
+//       U2 = qfp_fdiv(U2, 10);
+//       // U2 /= 10;
+//       U3 = qfp_fdiv(U3, 10);
+//       if (U1>1) {U1=1.;}
+//       else if (U1<0) {U1=0.;}
+//       if (U2>1) {U2=1.;}
+//       else if (U2<0) {U2=0.;}
+//       if (U3>1) {U3=1.;}
+//       else if (U3<0) {U3=0.;}
 
 
 //     }
