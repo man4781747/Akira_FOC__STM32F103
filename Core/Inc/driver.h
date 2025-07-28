@@ -2,7 +2,9 @@
 #define FOC_DRIVER_H
 
 #include <math.h>
+#include <stdint.h>
 #include "main.h"
+#include "micro_timer.h"
 #include "qfplib-m3.h"
 
 
@@ -14,7 +16,7 @@ extern TIM_HandleTypeDef htim1;
 // extern uint16_t pwmPluse_1;
 // extern uint16_t pwmPluse_2;
 // extern uint16_t pwmPluse_3;
-int period_ticksSet = 1800;
+// int htim1.Init.Period = htim1.Init.Period; // TIM1 period ticks
 float pwmNum = 900.f;
 float fullTime = 0.5;
 
@@ -32,9 +34,9 @@ static inline void SetAng(float ang)
     double time_110 = sin( ang_ * M_PI / 180.0) * fullTime;
     double time_000_111 = 1-time_100-time_110;
 
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (time_100+time_110+time_000_111/2)*period_ticksSet/2);
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, (time_110+time_000_111/2)*period_ticksSet/2);
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, (time_000_111/2)*period_ticksSet/2);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (time_100+time_110+time_000_111/2)*htim1.Init.Period/2);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, (time_110+time_000_111/2)*htim1.Init.Period/2);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, (time_000_111/2)*htim1.Init.Period/2);
   }
   else if (ang_ >= 60. && ang_ < 120.) {
     //? 110 -> 010 -> 000 -> 010 -> 110
@@ -44,9 +46,9 @@ static inline void SetAng(float ang)
     double time_010 = sin( (ang_-60.) * M_PI / 180.0) * fullTime;
     double time_000_111 = 1-time_010-time_110;
 
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (time_110+time_000_111/2)*period_ticksSet/2);
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, (time_110+time_010+time_000_111/2)*period_ticksSet/2);
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, (time_000_111/2)*period_ticksSet/2);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (time_110+time_000_111/2)*htim1.Init.Period/2);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, (time_110+time_010+time_000_111/2)*htim1.Init.Period/2);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, (time_000_111/2)*htim1.Init.Period/2);
   }
   else if (ang_ >= 120. && ang_ < 180.) {
     //? 010 -> 011 -> 111 -> 011 -> 010
@@ -56,9 +58,9 @@ static inline void SetAng(float ang)
     double time_011 = sin( (ang_-120.) * M_PI / 180.0)  * fullTime;
     double time_000_111 = 1-time_010-time_011;
 
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (time_000_111/2)*period_ticksSet/2);
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, (time_010+time_011+time_000_111/2)*period_ticksSet/2);
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, (time_011+time_000_111/2)*period_ticksSet/2);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (time_000_111/2)*htim1.Init.Period/2);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, (time_010+time_011+time_000_111/2)*htim1.Init.Period/2);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, (time_011+time_000_111/2)*htim1.Init.Period/2);
   }
   else if (ang_ >= 180. && ang_ < 240.) {
     //? 011 -> 001 -> 000 -> 001 -> 011
@@ -68,9 +70,9 @@ static inline void SetAng(float ang)
     double time_001 = sin( (ang_-180.) * M_PI / 180.0)  * fullTime;
     double time_000_111 = 1-time_011-time_001;
 
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (time_000_111/2)*period_ticksSet/2);
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, (time_011+time_000_111/2)*period_ticksSet/2);
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, (time_011+time_001+time_000_111/2)*period_ticksSet/2);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (time_000_111/2)*htim1.Init.Period/2);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, (time_011+time_000_111/2)*htim1.Init.Period/2);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, (time_011+time_001+time_000_111/2)*htim1.Init.Period/2);
   }
   else if (ang_ >= 240. && ang_ < 300.) {
     //? 001 -> 101 -> 111 -> 101 -> 001
@@ -80,9 +82,9 @@ static inline void SetAng(float ang)
     double time_101 = sin( (ang_-240.) * M_PI / 180.0) * fullTime;
     double time_000_111 = 1-time_101-time_001;
 
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (time_101+time_000_111/2)*period_ticksSet/2);
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, (time_000_111/2)*period_ticksSet/2);
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, (time_001+time_101+time_000_111/2)*period_ticksSet/2); 
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (time_101+time_000_111/2)*htim1.Init.Period/2);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, (time_000_111/2)*htim1.Init.Period/2);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, (time_001+time_101+time_000_111/2)*htim1.Init.Period/2); 
   }
   else if (ang_ >= 300. && ang_ < 360.) {
     //? 101 -> 100 -> 000 -> 100 -> 101
@@ -92,9 +94,9 @@ static inline void SetAng(float ang)
     double time_100 = sin( (ang_-300.) * M_PI / 180.0) * fullTime;
     double time_000_111 = 1-time_101-time_100;
 
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (time_101+time_100+time_000_111/2)*period_ticksSet/2);
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, (time_000_111/2)*period_ticksSet/2);
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, (time_101+time_000_111/2)*period_ticksSet/2);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, (time_101+time_100+time_000_111/2)*htim1.Init.Period/2);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, (time_000_111/2)*htim1.Init.Period/2);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, (time_101+time_000_111/2)*htim1.Init.Period/2);
   }
 }
 
@@ -105,7 +107,6 @@ void runPWM(float Ta, float Tb, float Tc) {
   else if (Tb<0) {Tb=0.;}
   if (Tc>1) {Tc=1.;}
   else if (Tc<0) {Tc=0.;}
-  
   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, qfp_fmul(Ta, pwmNum));
   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, qfp_fmul(Tb, pwmNum));
   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, qfp_fmul(Tc, pwmNum));
