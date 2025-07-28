@@ -3,6 +3,7 @@
 
 #include <stdint.h> // For uint32_t (for timestamp_prev)
 #include "micro_timer.h" 
+#include "qfplib-m3.h"
 
 float constrain(float amt, float low, float high) {
     if (amt < low) return low;
@@ -67,7 +68,10 @@ void PIDController_init(PIDController* ctrl, float P_val, float I_val, float D_v
 float PIDController_process(PIDController* ctrl, float error) {
     // calculate the time from the last call
     uint32_t timestamp_now = micros();
-    float Ts = (float)(timestamp_now - ctrl->timestamp_prev) * 1e-6f; // Convert microseconds to seconds
+
+
+    float Ts = qfp_fmul(qfp_fsub(timestamp_now, ctrl->timestamp_prev), 1e-6f);
+    // float Ts = (float)(timestamp_now - ctrl->timestamp_prev) * 1e-6f; // Convert microseconds to seconds
 
     // quick fix for strange cases (micros overflow or large initial dt)
     if (Ts <= 0.0f || Ts > 0.5f) { // Time wrapped around, error, or very large dt
@@ -78,20 +82,26 @@ float PIDController_process(PIDController* ctrl, float error) {
     // Discrete implementations
     // proportional part
     // u_p = P *e(k)
-    float proportional = ctrl->P * error;
+    float proportional = qfp_fmul(ctrl->P , error);
+    // float proportional = ctrl->P * error;
 
     // Tustin transform of the integral part
     // u_ik = u_ik_1 + I*Ts/2*(ek + ek_1)
-    float integral = ctrl->integral_prev + ctrl->I * Ts * 0.5f * (error + ctrl->error_prev);
+    float integral = qfp_fadd(ctrl->integral_prev, qfp_fmul(qfp_fmul(ctrl->I , Ts),qfp_fmul(0.5f, qfp_fadd(error , ctrl->error_prev))));
+    // float integral = ctrl->integral_prev + ctrl->I * Ts * 0.5f * (error + ctrl->error_prev);
+
+
     // antiwindup - limit the output
     integral = constrain(integral, -ctrl->limit, ctrl->limit);
 
     // Discrete derivation
     // u_dk = D(ek - ek_1)/Ts
-    float derivative = ctrl->D * (error - ctrl->error_prev) / Ts;
+    float derivative = qfp_fdiv(qfp_fmul(ctrl->D , qfp_fsub(error , ctrl->error_prev)) , Ts);
+    // float derivative = ctrl->D * (error - ctrl->error_prev) / Ts;
 
     // sum all the components
-    float output = proportional + integral + derivative;
+    float output = qfp_fadd(qfp_fadd(proportional , integral) , derivative);
+    // float output = proportional + integral + derivative;
     // antiwindup - limit the output variable
     output = constrain(output, -ctrl->limit, ctrl->limit);
 
