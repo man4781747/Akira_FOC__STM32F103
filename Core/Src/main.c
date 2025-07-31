@@ -261,8 +261,8 @@ int main(void)
    * 
    */
   float test = 5 ; // 6.3  /// 50
-  PIDController_init(&PID__current_Id, test, test*50, 0, 0, 4.5);  
-  PIDController_init(&PID__current_Iq, test, test*50, 0, 0, 4.5);  
+  PIDController_init(&PID__current_Id, 4.6, 1475, 0, 0, 4.5);  
+  PIDController_init(&PID__current_Iq, 4.6, 1475, 0, 0, 4.5);  
 
    
   // PIDController_init(&PID__current_Id, test, test*55, 0.00012, 0, 4.5);
@@ -273,8 +273,8 @@ int main(void)
 
 
 
-  PIDController_init(&PID__velocity, 0.153, 0.35 , 0., 0, .7);
-  PIDController_init(&PID__position,0.06, 1.4 ,0.001,0,10);
+  PIDController_init(&PID__velocity, 0.048 , 0.0925 , 0., 0, .7);
+  PIDController_init(&PID__position,0.0685, 0, 0.000, 0, 3);
 
   // adc設定
   // https://blog.csdn.net/tangxianyu/article/details/121149981
@@ -342,7 +342,7 @@ int main(void)
   float ang_get = readAng(angShift);
   float d_ang;
   float ang_speed = 0;
-
+  float ang_Target = 90;
 
   // 啟動CAN週邊
   HAL_CAN_Start(&hcan);
@@ -427,28 +427,30 @@ int main(void)
       // printf("%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%.2f, %.2f, %.2f\n", 
       //   ang_temp,I_q, I_d,current_W, current_U, current_V, ang_speed, U2, U3
       // );
-      positon_Target += 30;
-      if (positon_Target >= 360) {
-        positon_Target -= 360;
-      }
+      // positon_Target += 30;
+      // if (positon_Target >= 360) {
+      //   positon_Target -= 360;
+      // }
       logCount = 0;
       // speed__Target += test123;
       // if (speed__Target > 10 || speed__Target < -10) {
       //   speed__Target = -speed__Target;
       // }
-      // if (speed__Target > 5 || speed__Target < -5) {
+      // if (speed__Target > 4 || speed__Target < -4) {
       //   test123 = -test123;
       // }
       // u_q__Target += 0.1;
-      // if (u_q__Target > 0.75) {
-      //   u_q__Target = -0.75;
+      // if (ang_Target == 90) {
+      //   ang_Target = 270;
+      // } else {
+      //   ang_Target = 90;
       // }
     } 
 
 
 
-    speed__Target = PIDController_process(&PID__position, d_ang);
-    // speed__Target = 5;
+    speed__Target = PIDController_process(&PID__position, ang_Target-ang_temp);
+    speed__Target = 10;
 
     u_q__Target = PIDController_process(&PID__velocity, speed__Target-ang_speed);
     // u_q__Target = 0.1;
@@ -457,14 +459,9 @@ int main(void)
     uq = PIDController_process(&PID__current_Iq, u_q__Target - I_q);
 
     // ud = 0;
-    Id_Target = 0;
-    ud = PIDController_process(&PID__current_Id, Id_Target-I_d);
-    // if (ang_speed > 4 || ang_speed < -4) {
-    //   ud = PIDController_process(&PID__current_Id, -I_d);
-      
-    // } else {
-    //   ud = 0;
-    // }
+    // Id_Target = 0;
+    ud = PIDController_process(&PID__current_Id, -I_d);
+    // ud = 0;
     u_alpha = qfp_fsub( qfp_fmul(ud, cosRad), qfp_fmul(uq, sinRad));
     u_beta = qfp_fadd( qfp_fmul(ud, sinRad), qfp_fmul(uq, cosRad));
     // u_alpha = ud*cosRad-uq*sinRad;
@@ -474,38 +471,38 @@ int main(void)
     // speed__Target = 0.5;
     Svpwm(u_alpha, u_beta);
     printf("%.2f,%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%.2f, %.2f, %.2f\n", 
-      ang_temp,positon_Target,I_q, I_d,current_W, current_U, current_V, ang_speed, Id_Target, u_q__Target
+      ang_temp,speed__Target,I_q, I_d,current_W, current_U, current_V, ang_speed, Id_Target, u_q__Target
 
     );
 
 
 
 
-    // 設定傳輸標頭
-    TxHeader.StdId = 0x123; // 你的CAN ID (標準ID)
-    TxHeader.RTR = CAN_RTR_DATA; // 數據幀
-    TxHeader.IDE = CAN_ID_STD; // 標準ID
-    TxHeader.DLC = 8; // 數據長度，最多8個位元組
+    // // 設定傳輸標頭
+    // TxHeader.StdId = 0x123; // 你的CAN ID (標準ID)
+    // TxHeader.RTR = CAN_RTR_DATA; // 數據幀
+    // TxHeader.IDE = CAN_ID_STD; // 標準ID
+    // TxHeader.DLC = 8; // 數據長度，最多8個位元組
 
-    // 設定要發送的數據
-    TxData[0] = TxData[0] + 1;
-    for (int i = 0 ; i< 6 ; i++){
-      if (TxData[i] == 0xFF) {
-        TxData[i] = 0x00; // 重置計數器
-        TxData[i+1] = TxData[i+1] + 1;
-      }
-    }
-    if (TxData[7] == 0xFF) {
-      TxData[0] = 0x00; // 重置計數器
-    }
+    // // 設定要發送的數據
+    // TxData[0] = TxData[0] + 1;
+    // for (int i = 0 ; i< 6 ; i++){
+    //   if (TxData[i] == 0xFF) {
+    //     TxData[i] = 0x00; // 重置計數器
+    //     TxData[i+1] = TxData[i+1] + 1;
+    //   }
+    // }
+    // if (TxData[7] == 0xFF) {
+    //   TxData[0] = 0x00; // 重置計數器
+    // }
 
 
-    // 發送訊息
-    if (HAL_CAN_AddTxMessage(&hcan, &TxHeader, TxData, &TxMailbox) != HAL_OK) {
-        // 處理發送失敗的情況
-        printf("Cnan send message failed!\n");
-      // Error_Handler();
-    }
+    // // 發送訊息
+    // if (HAL_CAN_AddTxMessage(&hcan, &TxHeader, TxData, &TxMailbox) != HAL_OK) {
+    //     // 處理發送失敗的情況
+    //     printf("Cnan send message failed!\n");
+    //   // Error_Handler();
+    // }
   }
   /* USER CODE END 3 */
 }
