@@ -16,7 +16,10 @@ set(CMAKE_C_EXTENSIONS ON)
 # Define the build type
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Debug")
+    message("set: " CMAKE_BUILD_TYPE = ${CMAKE_BUILD_TYPE})
 endif()
+
+
 
 # Set the project name
 set(CMAKE_PROJECT_NAME STM32_FOC)
@@ -26,6 +29,7 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
 
 # Core project settings
 project(${CMAKE_PROJECT_NAME})
+message("Porject Name: " ${CMAKE_PROJECT_NAME})
 message("Build type: " ${CMAKE_BUILD_TYPE})
 
 # Enable CMake support for ASM and C languages

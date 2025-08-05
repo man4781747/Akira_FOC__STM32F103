@@ -32,6 +32,7 @@
 /* USER CODE BEGIN Includes */
 #include <stdint.h>
 #include <stdio.h> // for printf
+#include <string.h> 
 #include "setting.h"
 #include "driver.h"
 #include "M24C64_ctrl.h"
@@ -56,7 +57,12 @@
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-
+enum DeviceMode {
+  DeviceMode_Stop,
+  DeviceMode_SpeedMode,
+  DeviceMode_IqMode,
+  DeviceMode_PositionMode,
+};
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -74,6 +80,7 @@ TIM_HandleTypeDef htim4;
 
 UART_HandleTypeDef huart1;
 DMA_HandleTypeDef hdma_usart1_tx;
+DMA_HandleTypeDef hdma_usart1_rx;
 
 /* USER CODE BEGIN PV */
 
@@ -106,9 +113,13 @@ uint16_t adc_bios_U;
 uint16_t adc_bios_V;
 
 float angShift = 0;
-float positon_Target = 0;
 
 float Id_Target = 0;
+float Iq__Target = 0.1;
+float speed__Target = 0;
+float positon_Target = 0;
+
+enum DeviceMode deviceMode = DeviceMode_Stop;
 
 LowPassFilter filter_U;
 float current_U;
@@ -130,58 +141,18 @@ float U1, U2, U3;
 PIDController PID__current_Id;
 PIDController PID__current_Iq;
 PIDController PID__velocity;
-PIDController PID__velocity_05_1;
-PIDController PID__velocity_01_05;
+// PIDController PID__velocity_05_1;
+// PIDController PID__velocity_01_05;
 PIDController PID__position;
 
-uint16_t pwmPluse_1[1] = {0};
-uint16_t pwmPluse_2[1] = {0};
-uint16_t pwmPluse_3[1] = {0};
+// UART RX 相關變數
+uint8_t uart_rx_buffer[32];
+
 
 // 定義傳輸標頭和數據
 CAN_TxHeaderTypeDef TxHeader;
 uint8_t TxData[8] = {};
 uint32_t TxMailbox; // 用來儲存發送的郵箱號
-
-
-int isSend = 1;
-
-void I2C_Scan_Bus(void)
-{
-  uint8_t i;
-  HAL_StatusTypeDef ret;
-  // uint8_t StartMSG[] = "Starting I2C Scanning: \n";
-  // HAL_UART_Transmit(&huart2, StartMSG, sizeof(StartMSG), 10000);
-  printf("Scanning I2C bus...\n");
-  for (i = 1; i < 128; i++) // 遍历所有可能的 7 位地址 (1 到 127)
-  {
-      // 尝试检查设备是否就绪。I2C地址需要左移1位，并设置为8位地址
-      // TrialByte: 用于发送的虚拟字节，通常可以为1，或者不需要实际的写入数据
-      // Timeout: 等待应答的超时时间
-      ret = HAL_I2C_IsDeviceReady(&hi2c1, (uint16_t)(i << 1), 3, 5);
-
-      if (ret == HAL_OK)
-      {
-        printf("Found device at address 0x%02X\n",i);
-      }
-      else if (ret == HAL_ERROR)
-      {
-          // HAL_I2C_IsDeviceReady返回HAL_ERROR通常表示总线错误，需要检查硬件连接
-          // 或I2C配置，但在扫描时，这可能是因为没有设备应答，所以通常不做特殊处理
-      }
-      else if (ret == HAL_BUSY)
-      {
-          // I2C总线忙，可以等待或重试
-      }
-      else if (ret == HAL_TIMEOUT)
-      {
-          // 超时，表示没有设备应答
-      }
-  }
-  // uint8_t EndMSG[] = "Done! \n";
-  // HAL_UART_Transmit(&huart2, EndMSG, sizeof(EndMSG), 10000);
-  printf("I2C scan complete.\n");
-}
 
 /* USER CODE END 0 */
 
@@ -224,6 +195,9 @@ int main(void)
   MX_I2C1_Init();
   MX_TIM4_Init();
   /* USER CODE BEGIN 2 */
+  // UART1 RX 初始化
+  HAL_UARTEx_ReceiveToIdle_DMA(&huart1, uart_rx_buffer, sizeof(uart_rx_buffer));
+
 
   // 時鐘計時設定
   init_micros_timer();
@@ -260,8 +234,8 @@ int main(void)
 
 
   PIDController_init(&PID__velocity, 0.048 , 0.0925 , 0., 0, .7);  // 1~10
-  PIDController_init(&PID__velocity_05_1, 0.085 , 0.75 , 0., 0, .7);  // 1
-  PIDController_init(&PID__velocity_01_05, .2 , 3.6 , 0.0, 0, .7);  // 1./60.
+  // PIDController_init(&PID__velocity_05_1, 0.085 , 0.75 , 0., 0, .7);  // 1
+  // PIDController_init(&PID__velocity_01_05, .2 , 3.6 , 0.0, 0, .7);  // 1./60.
   PIDController_init(&PID__position,0.049, 0., 0.000, 0, 10);
   // PIDController_init(&PID__position,0.0685, 0, 0.000, 0, 3);
   // adc設定
@@ -280,10 +254,6 @@ int main(void)
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1); 
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
-
-  // HAL_TIM_PWM_Start_DMA(&htim1, TIM_CHANNEL_1, (uint32_t*)&pwmPluse_1, 1); 
-  // HAL_TIM_PWM_Start_DMA(&htim1, TIM_CHANNEL_2, (uint32_t*)&pwmPluse_2, 1);
-  // HAL_TIM_PWM_Start_DMA(&htim1, TIM_CHANNEL_3, (uint32_t*)&pwmPluse_3, 1);
 
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1); 
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
@@ -310,7 +280,7 @@ int main(void)
   HAL_Delay(10);
   adc_bios_W = adc_dma_buffer[0];
   adc_bios_U = adc_dma_buffer[1];
-  printf("ADC Bios: %d, %d\n", adc_bios_W, adc_bios_U);
+  // printf("ADC Bios: %d, %d\n", adc_bios_W, adc_bios_U);
   HAL_GPIO_WritePin(PWM_ACTIVE_GPIO_Port, PWM_ACTIVE_Pin, GPIO_PIN_SET);
   SetAng(0);
   
@@ -322,26 +292,17 @@ int main(void)
   //   printf("%d, %.2f\n", i, readAng(angShift));
   //   HAL_Delay(250);
   // }
-
-
-
-
-
-
   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
 
   int logCount = 0;
-  float test123 = 0.1;
-  float speed__Target = 0;
-  float u_q__Target = 0.1;
+
   uint64_t old_ang_time = micros();
   uint64_t new_ang_time;
   float ang_get = readAng(angShift);
   float d_ang;
   float ang_speed = 0;
-  float ang_Target = 90;
 
   // 啟動CAN週邊
   HAL_CAN_Start(&hcan);
@@ -418,69 +379,92 @@ int main(void)
     if (d_ang > 180) {
       d_ang = 360 - d_ang;
     } else if (d_ang < -180) {
-
       d_ang += 360;
     }
 
-    if (logCount++ > 250) {
-      // printf("%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%.2f, %.2f, %.2f\n", 
-      //   ang_temp,I_q, I_d,current_W, current_U, current_V, ang_speed, U2, U3
-      // );
-      // positon_Target += 30;
-      // if (positon_Target >= 360) {
-      //   positon_Target -= 360;
-      // }
-      logCount = 0;
-      // speed__Target += test123;
-      // // if (speed__Target > 10 || speed__Target < -10) {
-      // //   speed__Target = -speed__Target;
-      // // }
-      // if (speed__Target > 10 || speed__Target < -10) {
-      //   test123 = -test123;
-      // }
-      // u_q__Target += 0.1;
-      ang_Target += 30;
-      if (ang_Target >= 360) {
-        ang_Target -= 360;
+    // speed__Target = qfp_fsin(qfp_fmul(logCount++/30, 0.01745329251f))*10;
+
+    // if (logCount++ > 5) {
+    //   // printf("%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%.2f, %.2f, %.2f\n", 
+    //   //   ang_temp,I_q, I_d,current_W, current_U, current_V, ang_speed, U2, U3
+    //   // );
+    //   // positon_Target += 30;
+    //   // if (positon_Target >= 360) {
+    //   //   positon_Target -= 360;
+    //   // }
+    //   logCount = 0;
+      
+    //   speed__Target += test123;
+    //   // if (speed__Target > 10 || speed__Target < -10) {
+    //   //   speed__Target = -speed__Target;
+    //   // }
+    //   if (speed__Target > 10 || speed__Target < -10) {
+    //     test123 = -test123;
+    //   }
+    //   // Iq__Target += 0.1;
+    //   // ang_Target += 30;
+    //   // if (ang_Target >= 360) {
+    //   //   ang_Target -= 360;
+    //   // }
+    //   // if (ang_Target == 90) {
+    //   //   ang_Target = 270;
+    //   // } else {
+    //   //   ang_Target = 90;
+    //   // }
+    //   // speed__Target = -speed__Target;
+    //   // if (speed__Target == 0) {
+    //   //   speed__Target = 1./60.;
+    //   // }
+    //   // if (speed__Target == 1./60.) {
+    //   //   speed__Target = -1./60.;
+    //   // } else {
+    //   //   speed__Target = 1./60.;
+    //   // }
+    // } 
+
+
+    if (deviceMode == DeviceMode_PositionMode) {
+      float ang_error = positon_Target - ang_temp;
+      if (ang_error > 180) {
+        ang_error = 360.0f - ang_error;
+      } else if (ang_error < -180) {
+        ang_error += 360;
       }
-      // if (ang_Target == 90) {
-      //   ang_Target = 270;
-      // } else {
-      //   ang_Target = 90;
-      // }
-      // speed__Target = -speed__Target;
-      // if (speed__Target == 0) {
-      //   speed__Target = 1./60.;
-      // }
-      // if (speed__Target == 1./60.) {
-      //   speed__Target = -1./60.;
-      // } else {
-      //   speed__Target = 1./60.;
-      // }
-    } 
-
-
-
-    speed__Target = PIDController_process(&PID__position, ang_Target-ang_temp);
-    // speed__Target = 5./60.;
+      speed__Target = PIDController_process(&PID__position, ang_error);
+    }
     if (speed__Target > 1 || speed__Target < -1) {
-      u_q__Target = PIDController_process(&PID__velocity, speed__Target-ang_speed);
+      PID__velocity.P = 0.048;
+      PID__velocity.I = 0.0925;
+      Iq__Target = PIDController_process(&PID__velocity, speed__Target-ang_speed);
     } 
     else if (fabs(speed__Target) > 0.5 && fabs(speed__Target) <= 1) {
-      u_q__Target = PIDController_process(&PID__velocity_05_1, speed__Target-ang_speed);
+      PID__velocity.P = 0.085;
+      PID__velocity.I = 0.75;
+      Iq__Target = PIDController_process(&PID__velocity, speed__Target-ang_speed);
     } 
     else {
-      u_q__Target = PIDController_process(&PID__velocity_01_05, speed__Target-ang_speed);
+      PID__velocity.P = 0.2;
+      PID__velocity.I = 3.6;
+      Iq__Target = PIDController_process(&PID__velocity, speed__Target-ang_speed);
     }
-    // u_q__Target = PIDController_process(&PID__velocity_01_05, speed__Target-ang_speed);
-    // u_q__Target = 0.1;
+    uq = PIDController_process(&PID__current_Iq, Iq__Target - I_q);
+    ud = PIDController_process(&PID__current_Id, -I_d);
+
+    
+    if (deviceMode == DeviceMode_Stop) {
+      uq = 0;
+      ud = 0;
+    }
+
+    // Iq__Target = PIDController_process(&PID__velocity_01_05, speed__Target-ang_speed);
+    // Iq__Target = 0.1;
 
     // uq = 0;
-    uq = PIDController_process(&PID__current_Iq, u_q__Target - I_q);
+    // uq = PIDController_process(&PID__current_Iq, Iq__Target - I_q);
 
     // ud = 0;
     // Id_Target = 0;
-    ud = PIDController_process(&PID__current_Id, -I_d);
+    // ud = PIDController_process(&PID__current_Id, -I_d);
     // ud = 0;
     u_alpha = qfp_fsub( qfp_fmul(ud, cosRad), qfp_fmul(uq, sinRad));
     u_beta = qfp_fadd( qfp_fmul(ud, sinRad), qfp_fmul(uq, cosRad));
@@ -490,39 +474,40 @@ int main(void)
 
     // speed__Target = 0.5;
     Svpwm(u_alpha, u_beta);
-    printf("%.2f,%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%.2f, %.2f, %.2f\n", 
-      ang_temp,speed__Target,I_q, I_d,current_W, current_U, current_V, ang_speed, ang_Target, u_q__Target
-
+    printf("%.2f,%.2f,%.2f,%.2f,%.4f,%.4f,%.4f,%.4f, %.4f, %.2f\n", 
+      ang_temp,positon_Target,
+      ang_speed, speed__Target,
+      I_q, Iq__Target,current_W, current_U, current_V, I_d
     );
 
 
 
 
     // // 設定傳輸標頭
-    // TxHeader.StdId = 0x123; // 你的CAN ID (標準ID)
-    // TxHeader.RTR = CAN_RTR_DATA; // 數據幀
-    // TxHeader.IDE = CAN_ID_STD; // 標準ID
-    // TxHeader.DLC = 8; // 數據長度，最多8個位元組
+    TxHeader.StdId = 0x123; // 你的CAN ID (標準ID)
+    TxHeader.RTR = CAN_RTR_DATA; // 數據幀
+    TxHeader.IDE = CAN_ID_STD; // 標準ID
+    TxHeader.DLC = 8; // 數據長度，最多8個位元組
 
-    // // 設定要發送的數據
-    // TxData[0] = TxData[0] + 1;
-    // for (int i = 0 ; i< 6 ; i++){
-    //   if (TxData[i] == 0xFF) {
-    //     TxData[i] = 0x00; // 重置計數器
-    //     TxData[i+1] = TxData[i+1] + 1;
-    //   }
-    // }
-    // if (TxData[7] == 0xFF) {
-    //   TxData[0] = 0x00; // 重置計數器
-    // }
+    // 設定要發送的數據
+    TxData[0] = TxData[0] + 1;
+    for (int i = 0 ; i< 6 ; i++){
+      if (TxData[i] == 0xFF) {
+        TxData[i] = 0x00; // 重置計數器
+        TxData[i+1] = TxData[i+1] + 1;
+      }
+    }
+    if (TxData[7] == 0xFF) {
+      TxData[0] = 0x00; // 重置計數器
+    }
 
 
-    // // 發送訊息
-    // if (HAL_CAN_AddTxMessage(&hcan, &TxHeader, TxData, &TxMailbox) != HAL_OK) {
-    //     // 處理發送失敗的情況
-    //     printf("Cnan send message failed!\n");
-    //   // Error_Handler();
-    // }
+    // 發送訊息
+    if (HAL_CAN_AddTxMessage(&hcan, &TxHeader, TxData, &TxMailbox) != HAL_OK) {
+        // 處理發送失敗的情況
+        // printf("Cnan send message failed!\n");
+      // Error_Handler();
+    }
   }
   /* USER CODE END 3 */
 }
@@ -645,7 +630,7 @@ static void MX_CAN_Init(void)
 
   /* USER CODE END CAN_Init 1 */
   hcan.Instance = CAN1;
-  hcan.Init.Prescaler = 16;
+  hcan.Init.Prescaler = 6;
   hcan.Init.Mode = CAN_MODE_NORMAL;
   hcan.Init.SyncJumpWidth = CAN_SJW_1TQ;
   hcan.Init.TimeSeg1 = CAN_BS1_3TQ;
@@ -986,6 +971,9 @@ static void MX_DMA_Init(void)
   /* DMA1_Channel4_IRQn interrupt configuration */
   HAL_NVIC_SetPriority(DMA1_Channel4_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(DMA1_Channel4_IRQn);
+  /* DMA1_Channel5_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel5_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel5_IRQn);
 
 }
 
@@ -1043,13 +1031,10 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 int _write(int file, char *ptr, int len)
 {
-    // 透過 UART1 將數據發送出去
-    // huart1 是由 CubeMX 生成的 UART1 句柄
-    // HAL_MAX_DELAY 表示阻塞式發送，直到發送完成
-    // HAL_UART_Transmit(&huart1, (uint8_t*)ptr, len, HAL_MAX_DELAY);
-    // HAL_UART_Transmit_IT(&huart1, (uint8_t*)ptr, len);
-    HAL_UART_Transmit_DMA(&huart1, (uint8_t*)ptr, len);
-    return len;
+  // HAL_UART_Transmit(&huart1, (uint8_t*)ptr, len, HAL_MAX_DELAY);
+  // HAL_UART_Transmit_IT(&huart1, (uint8_t*)ptr, len);
+  HAL_UART_Transmit_DMA(&huart1, (uint8_t*)ptr, len);
+  return len;
 }
 
 void TIM1_IRQHandler(void)
@@ -1057,10 +1042,6 @@ void TIM1_IRQHandler(void)
   HAL_TIM_IRQHandler(&htim1);
 }
 
-// void TIM4_IRQHandler(void)
-// {
-//   HAL_TIM_IRQHandler(&htim4);
-// }
 
 void HAL_TIM_OC_DelayElapsedCallback(TIM_HandleTypeDef *htim)
 {
@@ -1072,16 +1053,11 @@ void HAL_TIM_OC_DelayElapsedCallback(TIM_HandleTypeDef *htim)
      */
     HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_dma_buffer, 2);
 
-
     // HAL_ADC_Start_DMA(&hadc1, (uint32_t*)(adc_dma_buffer+adc_bios*2), ADC_BUF_SIZE);
     // adc_bios ++;
     // if (adc_bios >= ADC_BUF_SIZE_BUFFER) {
     //   adc_bios = 0;
     // }
-
-    
-
-
   }
 }
 
@@ -1142,6 +1118,41 @@ void HAL_TIM_OC_DelayElapsedCallback(TIM_HandleTypeDef *htim)
 
 //     }
 // }
+
+void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
+{
+  if (huart->Instance == USART1) {
+    // 停止 DMA 接收以獲取已接收的資料長度
+    HAL_UART_DMAStop(huart);
+
+    // 將接收到的資料從 DMA 緩衝區複製到處理緩衝區
+
+    // printf("UART Receive: %s\n", uart_rx_buffer);
+    int intPart = 0;
+    // int result = sscanf((char*)uart_rx_buffer, "ST:%d", &intPart);
+    if (sscanf((char*)uart_rx_buffer, "ST:%d", &intPart) == 1) {
+      // printf("Set Speed: %d.%02d\n", intPart/100, intPart%100);
+      speed__Target = ((float)intPart)/100; 
+      deviceMode = DeviceMode_SpeedMode;
+    }
+    else if (sscanf((char*)uart_rx_buffer, "PT:%d", &intPart) == 1) {
+      // printf("Set ang: %d.%d\n", intPart/10, intPart%10);
+      positon_Target = ((float)intPart)/10; 
+      deviceMode = DeviceMode_PositionMode;
+    }
+    else if (strcmp((char*)uart_rx_buffer, "STOP") == 0) {
+      deviceMode = DeviceMode_Stop;
+    }
+
+
+
+
+    // 重新啟動 DMA 接收，繼續監聽下一次事件
+    memset(uart_rx_buffer, 0, sizeof(uart_rx_buffer)); // 清空接收緩衝區
+    HAL_UARTEx_ReceiveToIdle_DMA(&huart1, uart_rx_buffer, sizeof(uart_rx_buffer));
+  }
+}
+
 /* USER CODE END 4 */
 
 /**
