@@ -97,7 +97,7 @@ static void MX_TIM4_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 #define ADC_BUF_SIZE   2 // DMA 緩衝區大小 (單個通道的採樣點數)
-#define ADC_BUF_SIZE_BUFFER 10 
+#define ADC_BUF_SIZE_BUFFER 1
 uint16_t adc_dma_buffer[ADC_BUF_SIZE*ADC_BUF_SIZE_BUFFER];
 uint16_t adc_bios = 0;
 
@@ -130,6 +130,8 @@ float U1, U2, U3;
 PIDController PID__current_Id;
 PIDController PID__current_Iq;
 PIDController PID__velocity;
+PIDController PID__velocity_05_1;
+PIDController PID__velocity_01_05;
 PIDController PID__position;
 
 uint16_t pwmPluse_1[1] = {0};
@@ -239,7 +241,8 @@ int main(void)
   M24C64_ReadData(M24C64_Data, 0, 32);
   M24C64_ReadData(M24C64_Data+32, 1, 32);
 
-  float test_ = 0.000095f;
+  // float test_ = 0.000095f;
+  float test_ = 1.f/20000.f;
   LowPassFilter_Init(&filter_U, test_);
   LowPassFilter_Init(&filter_V, test_);
   LowPassFilter_Init(&filter_W, test_);
@@ -252,30 +255,15 @@ int main(void)
    * Kp = 0.0028(L)*350*2*pi = 6.157521601035994
    * Ki = 5.1*350*2*pi/10000 = 1.121548577331556
    */
-
-  // PIDController_init(&PID__current_Id, 6.157521601035994, 1.121548577331556, 0, 0, 4.5);
-  // PIDController_init(&PID__current_Iq, 6.157521601035994, 1.121548577331556, 0, 0, 4.5);  
-
-  /**
-   * 
-   * 
-   */
-  float test = 5 ; // 6.3  /// 50
   PIDController_init(&PID__current_Id, 4.6, 1475, 0, 0, 4.5);  
   PIDController_init(&PID__current_Iq, 4.6, 1475, 0, 0, 4.5);  
 
-   
-  // PIDController_init(&PID__current_Id, test, test*55, 0.00012, 0, 4.5);
-  // PIDController_init(&PID__current_Id, 4, 4*240, 0, 0, 4.5);
-  // PIDController_init(&PID__current_Iq, 4, 4*240, 0, 0, 4.5);  
-  // PIDController_init(&PID__velocity, 0.15, 0.515, 0, 0, 1);
 
-
-
-
-  PIDController_init(&PID__velocity, 0.048 , 0.0925 , 0., 0, .7);
-  PIDController_init(&PID__position,0.0685, 0, 0.000, 0, 3);
-
+  PIDController_init(&PID__velocity, 0.048 , 0.0925 , 0., 0, .7);  // 1~10
+  PIDController_init(&PID__velocity_05_1, 0.085 , 0.75 , 0., 0, .7);  // 1
+  PIDController_init(&PID__velocity_01_05, .2 , 3.6 , 0.0, 0, .7);  // 1./60.
+  PIDController_init(&PID__position,0.049, 0., 0.000, 0, 10);
+  // PIDController_init(&PID__position,0.0685, 0, 0.000, 0, 3);
   // adc設定
   // https://blog.csdn.net/tangxianyu/article/details/121149981
   // HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_dma_buffer, ADC_BUF_SIZE);
@@ -329,12 +317,23 @@ int main(void)
   HAL_Delay(500);
   angShift = readAng(angShift);
 
+  // for (int i=0;i<360*7;i=i+30) {
+  //   SetAng(i);
+  //   printf("%d, %.2f\n", i, readAng(angShift));
+  //   HAL_Delay(250);
+  // }
+
+
+
+
+
+
   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
 
   int logCount = 0;
-  float test123 = 1;
+  float test123 = 0.1;
   float speed__Target = 0;
   float u_q__Target = 0.1;
   uint64_t old_ang_time = micros();
@@ -378,21 +377,21 @@ int main(void)
     // angToRad = ang_temp*7*0.01745329251f;
     angToRad = qfp_fmul(qfp_fmul(ang_temp, 7), 0.01745329251f);
 
-    uint16_t W_add = 0;
-    uint16_t U_add = 0;
-    for (int i = 0; i < ADC_BUF_SIZE_BUFFER; i++) {
-      W_add += adc_dma_buffer[2*i];
-      U_add += adc_dma_buffer[2*i+1];
-    }
-    W_add /= ADC_BUF_SIZE_BUFFER;
-    U_add /= ADC_BUF_SIZE_BUFFER;
+    // uint16_t W_add = 0;
+    // uint16_t U_add = 0;
+    // for (int i = 0; i < ADC_BUF_SIZE_BUFFER; i++) {
+    //   W_add += adc_dma_buffer[2*i];
+    //   U_add += adc_dma_buffer[2*i+1];
+    // }
+    // W_add /= ADC_BUF_SIZE_BUFFER;
+    // U_add /= ADC_BUF_SIZE_BUFFER;
 
-    current_W = qfp_fmul(W_add-adc_bios_W, 0.0008056640625f);
-    current_U = qfp_fmul(U_add-adc_bios_U, 0.0008056640625f);
-    current_V = qfp_fsub(-current_U, current_W);
-    // current_W = LowPassFilter_Update(&filter_W, (float)(W_add-adc_bios_W)*0.0008056640625f);
-    // current_U = LowPassFilter_Update(&filter_U, (float)(U_add-adc_bios_U)*0.0008056640625f);
-    // current_V = LowPassFilter_Update(&filter_V, -current_U - current_W);
+    // current_W = qfp_fmul(adc_dma_buffer[0]-adc_bios_W, 0.0008056640625f);
+    // current_U = qfp_fmul(adc_dma_buffer[1]-adc_bios_U, 0.0008056640625f);
+    // current_V = qfp_fsub(-current_U, current_W);
+    current_W = LowPassFilter_Update(&filter_W, (float)(adc_dma_buffer[0]-adc_bios_W)*0.0008056640625f);
+    current_U = LowPassFilter_Update(&filter_U, (float)(adc_dma_buffer[1]-adc_bios_U)*0.0008056640625f);
+    current_V = LowPassFilter_Update(&filter_V, -current_U - current_W);
 
 
 
@@ -423,7 +422,7 @@ int main(void)
       d_ang += 360;
     }
 
-    if (logCount++ > 500) {
+    if (logCount++ > 250) {
       // printf("%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%.2f, %.2f, %.2f\n", 
       //   ang_temp,I_q, I_d,current_W, current_U, current_V, ang_speed, U2, U3
       // );
@@ -433,26 +432,47 @@ int main(void)
       // }
       logCount = 0;
       // speed__Target += test123;
+      // // if (speed__Target > 10 || speed__Target < -10) {
+      // //   speed__Target = -speed__Target;
+      // // }
       // if (speed__Target > 10 || speed__Target < -10) {
-      //   speed__Target = -speed__Target;
-      // }
-      // if (speed__Target > 4 || speed__Target < -4) {
       //   test123 = -test123;
       // }
       // u_q__Target += 0.1;
+      ang_Target += 30;
+      if (ang_Target >= 360) {
+        ang_Target -= 360;
+      }
       // if (ang_Target == 90) {
       //   ang_Target = 270;
       // } else {
       //   ang_Target = 90;
+      // }
+      // speed__Target = -speed__Target;
+      // if (speed__Target == 0) {
+      //   speed__Target = 1./60.;
+      // }
+      // if (speed__Target == 1./60.) {
+      //   speed__Target = -1./60.;
+      // } else {
+      //   speed__Target = 1./60.;
       // }
     } 
 
 
 
     speed__Target = PIDController_process(&PID__position, ang_Target-ang_temp);
-    speed__Target = 10;
-
-    u_q__Target = PIDController_process(&PID__velocity, speed__Target-ang_speed);
+    // speed__Target = 5./60.;
+    if (speed__Target > 1 || speed__Target < -1) {
+      u_q__Target = PIDController_process(&PID__velocity, speed__Target-ang_speed);
+    } 
+    else if (fabs(speed__Target) > 0.5 && fabs(speed__Target) <= 1) {
+      u_q__Target = PIDController_process(&PID__velocity_05_1, speed__Target-ang_speed);
+    } 
+    else {
+      u_q__Target = PIDController_process(&PID__velocity_01_05, speed__Target-ang_speed);
+    }
+    // u_q__Target = PIDController_process(&PID__velocity_01_05, speed__Target-ang_speed);
     // u_q__Target = 0.1;
 
     // uq = 0;
@@ -471,7 +491,7 @@ int main(void)
     // speed__Target = 0.5;
     Svpwm(u_alpha, u_beta);
     printf("%.2f,%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%.2f, %.2f, %.2f\n", 
-      ang_temp,speed__Target,I_q, I_d,current_W, current_U, current_V, ang_speed, Id_Target, u_q__Target
+      ang_temp,speed__Target,I_q, I_d,current_W, current_U, current_V, ang_speed, ang_Target, u_q__Target
 
     );
 
@@ -625,7 +645,7 @@ static void MX_CAN_Init(void)
 
   /* USER CODE END CAN_Init 1 */
   hcan.Instance = CAN1;
-  hcan.Init.Prescaler = 6;
+  hcan.Init.Prescaler = 16;
   hcan.Init.Mode = CAN_MODE_NORMAL;
   hcan.Init.SyncJumpWidth = CAN_SJW_1TQ;
   hcan.Init.TimeSeg1 = CAN_BS1_3TQ;
@@ -1050,11 +1070,14 @@ void HAL_TIM_OC_DelayElapsedCallback(TIM_HandleTypeDef *htim)
      * @brief 有感流程需要量測ADC
      * 
      */
-    HAL_ADC_Start_DMA(&hadc1, (uint32_t*)(adc_dma_buffer+adc_bios*2), ADC_BUF_SIZE);
-    adc_bios ++;
-    if (adc_bios >= ADC_BUF_SIZE_BUFFER) {
-      adc_bios = 0;
-    }
+    HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_dma_buffer, 2);
+
+
+    // HAL_ADC_Start_DMA(&hadc1, (uint32_t*)(adc_dma_buffer+adc_bios*2), ADC_BUF_SIZE);
+    // adc_bios ++;
+    // if (adc_bios >= ADC_BUF_SIZE_BUFFER) {
+    //   adc_bios = 0;
+    // }
 
     
 
