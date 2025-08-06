@@ -154,6 +154,30 @@ CAN_TxHeaderTypeDef TxHeader;
 uint8_t TxData[8] = {};
 uint32_t TxMailbox; // 用來儲存發送的郵箱號
 
+// CAN接收消息头和数据
+CAN_RxHeaderTypeDef RxHeader;
+uint8_t RxData[8];
+
+void CAN_Filter_Config(){
+  CAN_FilterTypeDef sFilterConfig;
+ 
+  sFilterConfig.FilterBank = 0;      //筛选器编号, CAN1是0-13, CAN2是14-27
+  sFilterConfig.FilterMode = CAN_FILTERMODE_IDMASK; //采用掩码模式
+  sFilterConfig.FilterScale = CAN_FILTERSCALE_32BIT; //设置筛选器的尺度, 采用32位
+  sFilterConfig.FilterIdHigh = 0X0000;    //过滤器ID高16位,即CAN_FxR1寄存器的高16位
+  sFilterConfig.FilterIdLow = 0X0000;     //过滤器ID低16位,即CAN_FxR1寄存器的低16位
+  sFilterConfig.FilterMaskIdHigh = 0X0000;   //过滤器掩码高16位,即CAN_FxR2寄存器的高16位
+  sFilterConfig.FilterMaskIdLow = 0X0000;    //过滤器掩码低16位,即CAN_FxR2寄存器的低16位
+  sFilterConfig.FilterFIFOAssignment = CAN_RX_FIFO0; //设置经过筛选后数据存储到哪个接收FIFO
+  sFilterConfig.FilterActivation = ENABLE;   //是否使能本筛选器
+  sFilterConfig.SlaveStartFilterBank = 14;   //指定为CAN1分配多少个滤波器组
+ 
+  if(HAL_CAN_ConfigFilter(&hcan, &sFilterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -305,8 +329,20 @@ int main(void)
   float ang_speed = 0;
 
   // 啟動CAN週邊
-  HAL_CAN_Start(&hcan);
 
+  CAN_Filter_Config();
+	if (HAL_CAN_Start(&hcan) != HAL_OK) 
+  {
+    Error_Handler();
+  }
+	else{
+    printf("HAL_CAN1_Star1 is HAL_OK\r\n"); 
+  }
+
+  if (HAL_CAN_ActivateNotification(&hcan, CAN_IT_RX_FIFO0_MSG_PENDING) != HAL_OK)
+  {
+    Error_Handler();
+  }
 
   /* USER CODE END 2 */
 
@@ -474,40 +510,40 @@ int main(void)
 
     // speed__Target = 0.5;
     Svpwm(u_alpha, u_beta);
-    printf("%.2f,%.2f,%.2f,%.2f,%.4f,%.4f,%.4f,%.4f, %.4f, %.2f\n", 
-      ang_temp,positon_Target,
-      ang_speed, speed__Target,
-      I_q, Iq__Target,current_W, current_U, current_V, I_d
-    );
+    // printf("%.2f,%.2f,%.2f,%.2f,%.4f,%.4f,%.4f,%.4f, %.4f, %.2f\n", 
+    //   ang_temp,positon_Target,
+    //   ang_speed, speed__Target,
+    //   I_q, Iq__Target,current_W, current_U, current_V, I_d
+    // );
 
 
 
 
-    // // 設定傳輸標頭
-    TxHeader.StdId = 0x123; // 你的CAN ID (標準ID)
-    TxHeader.RTR = CAN_RTR_DATA; // 數據幀
-    TxHeader.IDE = CAN_ID_STD; // 標準ID
-    TxHeader.DLC = 8; // 數據長度，最多8個位元組
+    // 設定傳輸標頭
+    // TxHeader.StdId = 0x123; // 你的CAN ID (標準ID)
+    // TxHeader.RTR = CAN_RTR_DATA; // 數據幀
+    // TxHeader.IDE = CAN_ID_STD; // 標準ID
+    // TxHeader.DLC = 8; // 數據長度，最多8個位元組
 
-    // 設定要發送的數據
-    TxData[0] = TxData[0] + 1;
-    for (int i = 0 ; i< 6 ; i++){
-      if (TxData[i] == 0xFF) {
-        TxData[i] = 0x00; // 重置計數器
-        TxData[i+1] = TxData[i+1] + 1;
-      }
-    }
-    if (TxData[7] == 0xFF) {
-      TxData[0] = 0x00; // 重置計數器
-    }
+    // // 設定要發送的數據
+    // TxData[0] = TxData[0] + 1;
+    // for (int i = 0 ; i< 6 ; i++){
+    //   if (TxData[i] == 0xFF) {
+    //     TxData[i] = 0x00; // 重置計數器
+    //     TxData[i+1] = TxData[i+1] + 1;
+    //   }
+    // }
+    // if (TxData[7] == 0xFF) {
+    //   TxData[0] = 0x00; // 重置計數器
+    // }
 
 
     // 發送訊息
-    if (HAL_CAN_AddTxMessage(&hcan, &TxHeader, TxData, &TxMailbox) != HAL_OK) {
-        // 處理發送失敗的情況
-        // printf("Cnan send message failed!\n");
-      // Error_Handler();
-    }
+    // if (HAL_CAN_AddTxMessage(&hcan, &TxHeader, TxData, &TxMailbox) != HAL_OK) {
+    //     // 處理發送失敗的情況
+    //   printf("Cnan send message failed!\n");
+    //   Error_Handler();
+    // }
   }
   /* USER CODE END 3 */
 }
@@ -1119,38 +1155,65 @@ void HAL_TIM_OC_DelayElapsedCallback(TIM_HandleTypeDef *htim)
 //     }
 // }
 
-void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
+// void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t Size)
+// {
+//   if (huart->Instance == USART1) {
+//     // 停止 DMA 接收以獲取已接收的資料長度
+//     HAL_UART_DMAStop(huart);
+
+//     // 將接收到的資料從 DMA 緩衝區複製到處理緩衝區
+
+//     // printf("UART Receive: %s\n", uart_rx_buffer);
+//     int intPart = 0;
+//     // int result = sscanf((char*)uart_rx_buffer, "ST:%d", &intPart);
+//     if (sscanf((char*)uart_rx_buffer, "ST:%d", &intPart) == 1) {
+//       // printf("Set Speed: %d.%02d\n", intPart/100, intPart%100);
+//       speed__Target = ((float)intPart)/100; 
+//       deviceMode = DeviceMode_SpeedMode;
+//     }
+//     else if (sscanf((char*)uart_rx_buffer, "PT:%d", &intPart) == 1) {
+//       // printf("Set ang: %d.%d\n", intPart/10, intPart%10);
+//       positon_Target = ((float)intPart)/10; 
+//       deviceMode = DeviceMode_PositionMode;
+//     }
+//     else if (strcmp((char*)uart_rx_buffer, "STOP") == 0) {
+//       deviceMode = DeviceMode_Stop;
+//     }
+
+//     // 重新啟動 DMA 接收，繼續監聽下一次事件
+//     memset(uart_rx_buffer, 0, sizeof(uart_rx_buffer)); // 清空接收緩衝區
+//     HAL_UARTEx_ReceiveToIdle_DMA(&huart1, uart_rx_buffer, sizeof(uart_rx_buffer));
+//   }
+// }
+
+
+void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 {
-  if (huart->Instance == USART1) {
-    // 停止 DMA 接收以獲取已接收的資料長度
-    HAL_UART_DMAStop(huart);
-
-    // 將接收到的資料從 DMA 緩衝區複製到處理緩衝區
-
-    // printf("UART Receive: %s\n", uart_rx_buffer);
-    int intPart = 0;
-    // int result = sscanf((char*)uart_rx_buffer, "ST:%d", &intPart);
-    if (sscanf((char*)uart_rx_buffer, "ST:%d", &intPart) == 1) {
-      // printf("Set Speed: %d.%02d\n", intPart/100, intPart%100);
-      speed__Target = ((float)intPart)/100; 
-      deviceMode = DeviceMode_SpeedMode;
+    // 从FIFO0中接收消息
+    if (HAL_CAN_GetRxMessage(hcan, CAN_FILTER_FIFO0, &RxHeader, RxData) != HAL_OK)
+    {
+      // 接收失败处理
+      Error_Handler();
     }
-    else if (sscanf((char*)uart_rx_buffer, "PT:%d", &intPart) == 1) {
-      // printf("Set ang: %d.%d\n", intPart/10, intPart%10);
-      positon_Target = ((float)intPart)/10; 
-      deviceMode = DeviceMode_PositionMode;
-    }
-    else if (strcmp((char*)uart_rx_buffer, "STOP") == 0) {
+    float test;
+    if (RxData[0] == 0) {
       deviceMode = DeviceMode_Stop;
     }
-
-
-
-
-    // 重新啟動 DMA 接收，繼續監聽下一次事件
-    memset(uart_rx_buffer, 0, sizeof(uart_rx_buffer)); // 清空接收緩衝區
-    HAL_UARTEx_ReceiveToIdle_DMA(&huart1, uart_rx_buffer, sizeof(uart_rx_buffer));
-  }
+    else if (RxData[0] == 1) {
+      if (RxData[1] == 0) {
+        memcpy(&speed__Target, &RxData[2], sizeof(float));
+        deviceMode = DeviceMode_SpeedMode;
+      }
+    }
+    // // 在这里处理接收到的数据
+    // // 例如：检查CAN ID，解析数据，更新变量等
+    // if (RxHeader.StdId == 0x100)
+    // {
+    //   sprintf("%s", RxData);
+    //     // 打印接收到的数据
+    //     // ...
+    // }
+    int a = 0;
 }
 
 /* USER CODE END 4 */
