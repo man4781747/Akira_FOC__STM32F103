@@ -89,7 +89,13 @@ void Error_Handler(void);
 #define LED_Status_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
-
+enum DeviceMode {
+  DeviceMode_Stop,
+  DeviceMode_SpeedMode,
+  DeviceMode_IqMode,
+  DeviceMode_PositionMode,
+  DeviceMode_SetAngShift
+};
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus

@@ -43,6 +43,7 @@
 #include "qfplib-m3.h"
 #include "stm32f1xx_hal.h"
 #include "stm32f1xx_hal_tim.h"
+#include "canbus_communication.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -57,12 +58,6 @@
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-enum DeviceMode {
-  DeviceMode_Stop,
-  DeviceMode_SpeedMode,
-  DeviceMode_IqMode,
-  DeviceMode_PositionMode,
-};
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -76,7 +71,6 @@ I2C_HandleTypeDef hi2c2;
 
 TIM_HandleTypeDef htim1;
 TIM_HandleTypeDef htim2;
-TIM_HandleTypeDef htim4;
 
 UART_HandleTypeDef huart1;
 DMA_HandleTypeDef hdma_usart1_tx;
@@ -97,7 +91,6 @@ static void MX_USART1_UART_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_I2C1_Init(void);
-static void MX_TIM4_Init(void);
 /* USER CODE BEGIN PFP */
 /* USER CODE END PFP */
 
@@ -112,9 +105,14 @@ uint16_t adc_bios_W;
 uint16_t adc_bios_U;
 uint16_t adc_bios_V;
 
+
+float ang_pre;
+float d_ang;
+float ang_speed = 0;
+
+uint64_t old_ang_time, new_ang_time;
 float angShift = 0;
 
-float Id_Target = 0;
 float Iq__Target = 0.1;
 float speed__Target = 0;
 float positon_Target = 0;
@@ -160,7 +158,6 @@ uint8_t RxData[8];
 
 void CAN_Filter_Config(){
   CAN_FilterTypeDef sFilterConfig;
- 
   sFilterConfig.FilterBank = 0;      //筛选器编号, CAN1是0-13, CAN2是14-27
   sFilterConfig.FilterMode = CAN_FILTERMODE_IDMASK; //采用掩码模式
   sFilterConfig.FilterScale = CAN_FILTERSCALE_32BIT; //设置筛选器的尺度, 采用32位
@@ -171,7 +168,6 @@ void CAN_Filter_Config(){
   sFilterConfig.FilterFIFOAssignment = CAN_RX_FIFO0; //设置经过筛选后数据存储到哪个接收FIFO
   sFilterConfig.FilterActivation = ENABLE;   //是否使能本筛选器
   sFilterConfig.SlaveStartFilterBank = 14;   //指定为CAN1分配多少个滤波器组
- 
   if(HAL_CAN_ConfigFilter(&hcan, &sFilterConfig) != HAL_OK)
   {
     Error_Handler();
@@ -217,33 +213,30 @@ int main(void)
   MX_TIM1_Init();
   MX_TIM2_Init();
   MX_I2C1_Init();
-  MX_TIM4_Init();
   /* USER CODE BEGIN 2 */
-  // UART1 RX 初始化
-  HAL_UARTEx_ReceiveToIdle_DMA(&huart1, uart_rx_buffer, sizeof(uart_rx_buffer));
 
+  // UART1 RX 初始化 - 使用 DMA
+  HAL_UARTEx_ReceiveToIdle_DMA(&huart1, uart_rx_buffer, sizeof(uart_rx_buffer));
 
   // 時鐘計時設定
   init_micros_timer();
 
   // M24C64
-  uint8_t M24C64_Data[100];
-  uint8_t WriteDataTest[100];
-  // HAL_I2C_Mem_Write 函數會處理 START, 從設備位址, 記憶體位址, 資料, STOP, ACK/NACK
-  for (int i =0;i<100;i++){
-    WriteDataTest[i] = i;
-    M24C64_Data[i] = 0;
-  }
-  M24C64_WriteData(WriteDataTest, 0, 32);
-  M24C64_WriteData(WriteDataTest+32, 1, 32);
-  M24C64_ReadData(M24C64_Data, 0, 32);
-  M24C64_ReadData(M24C64_Data+32, 1, 32);
+  // uint8_t M24C64_Data[100];
+  // uint8_t WriteDataTest[100];
+  // for (int i =0;i<100;i++){
+  //   WriteDataTest[i] = i;
+  //   M24C64_Data[i] = 0;
+  // }
+  // M24C64_WriteData(WriteDataTest, 0, 32);
+  // M24C64_WriteData(WriteDataTest+32, 1, 32);
+  // M24C64_ReadData(M24C64_Data, 0, 32);
+  // M24C64_ReadData(M24C64_Data+32, 1, 32);
 
-  // float test_ = 0.000095f;
-  float test_ = 1.f/20000.f;
-  LowPassFilter_Init(&filter_U, test_);
-  LowPassFilter_Init(&filter_V, test_);
-  LowPassFilter_Init(&filter_W, test_);
+  float adcSimpleRate = 1.f/20000.f;
+  LowPassFilter_Init(&filter_U, adcSimpleRate);
+  LowPassFilter_Init(&filter_V, adcSimpleRate);
+  LowPassFilter_Init(&filter_W, adcSimpleRate);
   LowPassFilter_Init(&filter_Speed, 0.008f);
 
   /**
@@ -252,16 +245,15 @@ int main(void)
    * L = 0.0028
    * Kp = 0.0028(L)*350*2*pi = 6.157521601035994
    * Ki = 5.1*350*2*pi/10000 = 1.121548577331556
+   * 
+   * 後續精實測，此做法與實際調適的參數差異極大，可能PID的方法是不同的?
    */
   PIDController_init(&PID__current_Id, 4.6, 1475, 0, 0, 4.5);  
   PIDController_init(&PID__current_Iq, 4.6, 1475, 0, 0, 4.5);  
 
 
   PIDController_init(&PID__velocity, 0.048 , 0.0925 , 0., 0, .7);  // 1~10
-  // PIDController_init(&PID__velocity_05_1, 0.085 , 0.75 , 0., 0, .7);  // 1
-  // PIDController_init(&PID__velocity_01_05, .2 , 3.6 , 0.0, 0, .7);  // 1./60.
   PIDController_init(&PID__position,0.049, 0., 0.000, 0, 10);
-  // PIDController_init(&PID__position,0.0685, 0, 0.000, 0, 3);
   // adc設定
   // https://blog.csdn.net/tangxianyu/article/details/121149981
   // HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_dma_buffer, ADC_BUF_SIZE);
@@ -269,25 +261,24 @@ int main(void)
 
 
   // https://blog.csdn.net/qq_45854134/article/details/134181326
+  /**
+   * 設置各通道的PWM占空比
+   * U、V、W 通道設為 0
+   * ADC量測觸發設為 htim1.Init.Period
+   *  - 但 ADC 量測怎麼調都會比在馬達驅動的PWM週期中心多偏移一點
+   */
   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);    
   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, htim1.Init.Period);
-  // __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, 225);
+
   __HAL_TIM_SET_COUNTER(&htim1, 0);
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1); 
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
 
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1); 
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
-
   HAL_TIM_OC_Start_IT(&htim1, TIM_CHANNEL_4);
 
-  HAL_TIM_Base_Start(&htim4); 
-  // HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_dma_buffer, ADC_BUF_SIZE);
-  HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_4);
 
   GPIO_InitTypeDef GPIO_InitStruct = {0}; // 1-V/A
   GPIO_InitStruct.Pin = GAIN_Pin;
@@ -296,37 +287,38 @@ int main(void)
   HAL_GPIO_Init(GAIN_GPIO_Port, &GPIO_InitStruct);
 
   HAL_GPIO_WritePin(SLEW_GPIO_Port, SLEW_Pin, GPIO_PIN_SET);   // 200-V/µ
+
   HAL_GPIO_WritePin(PWM_ACTIVE_GPIO_Port, PWM_ACTIVE_Pin, GPIO_PIN_RESET);
 
   HAL_GPIO_WritePin(SLEEP_GPIO_Port, SLEEP_Pin, GPIO_PIN_RESET);
   HAL_Delay(10);
   HAL_GPIO_WritePin(SLEEP_GPIO_Port, SLEEP_Pin, GPIO_PIN_SET);
   HAL_Delay(10);
+
   adc_bios_W = adc_dma_buffer[0];
   adc_bios_U = adc_dma_buffer[1];
-  // printf("ADC Bios: %d, %d\n", adc_bios_W, adc_bios_U);
+
   HAL_GPIO_WritePin(PWM_ACTIVE_GPIO_Port, PWM_ACTIVE_Pin, GPIO_PIN_SET);
-  SetAng(0);
-  
-  HAL_Delay(500);
-  angShift = readAng(angShift);
+
+  // SetAng(0);
+  // HAL_Delay(500);
+  // angShift = readAng(angShift);
+  angShift = ReadAngShift();
+  printf("%d\n", (int)(angShift*100));
 
   // for (int i=0;i<360*7;i=i+30) {
   //   SetAng(i);
   //   printf("%d, %.2f\n", i, readAng(angShift));
   //   HAL_Delay(250);
   // }
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
+  // __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
+  // __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
+  // __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
 
   int logCount = 0;
 
-  uint64_t old_ang_time = micros();
-  uint64_t new_ang_time;
-  float ang_get = readAng(angShift);
-  float d_ang;
-  float ang_speed = 0;
+  old_ang_time = micros();
+  ang_pre = readAng(angShift);
 
   // 啟動CAN週邊
 
@@ -343,6 +335,13 @@ int main(void)
   {
     Error_Handler();
   }
+  // 設定傳輸標頭
+  TxHeader.StdId = 0x123; // 你的CAN ID (標準ID)
+  TxHeader.RTR = CAN_RTR_DATA; // 數據幀
+  TxHeader.IDE = CAN_ID_STD; // 標準ID
+  TxHeader.DLC = 8; // 數據長度，最多8個位元組
+
+
 
   /* USER CODE END 2 */
 
@@ -353,177 +352,33 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    new_ang_time = micros();
-    ang_temp = readAng(angShift);
-    d_ang = ang_temp - ang_get;
-    if (d_ang > 180) {
-      d_ang -= 360;
-    } else if (d_ang < -180) {
-      d_ang += 360;
-    }
-    int dTime = (int)new_ang_time-(int)old_ang_time;
-    if (dTime < 0) {
-      dTime += 65535;
-    }
-      
-    ang_speed = LowPassFilter_Update(&filter_Speed, d_ang/dTime*2777.777777777778f);
-    // ang_speed = d_ang/dTime*2777.777777777778f;
-    
-    ang_get = ang_temp;
-    old_ang_time = new_ang_time;
-    // angToRad = ang_temp*7*0.01745329251f;
-    angToRad = qfp_fmul(qfp_fmul(ang_temp, 7), 0.01745329251f);
-
-    // uint16_t W_add = 0;
-    // uint16_t U_add = 0;
-    // for (int i = 0; i < ADC_BUF_SIZE_BUFFER; i++) {
-    //   W_add += adc_dma_buffer[2*i];
-    //   U_add += adc_dma_buffer[2*i+1];
-    // }
-    // W_add /= ADC_BUF_SIZE_BUFFER;
-    // U_add /= ADC_BUF_SIZE_BUFFER;
-
-    // current_W = qfp_fmul(adc_dma_buffer[0]-adc_bios_W, 0.0008056640625f);
-    // current_U = qfp_fmul(adc_dma_buffer[1]-adc_bios_U, 0.0008056640625f);
-    // current_V = qfp_fsub(-current_U, current_W);
-    current_W = LowPassFilter_Update(&filter_W, (float)(adc_dma_buffer[0]-adc_bios_W)*0.0008056640625f);
-    current_U = LowPassFilter_Update(&filter_U, (float)(adc_dma_buffer[1]-adc_bios_U)*0.0008056640625f);
-    current_V = LowPassFilter_Update(&filter_V, -current_U - current_W);
-
-
-
-    I_alpha = current_V;
-    I_beta = qfp_fmul(
-      qfp_fadd(
-        qfp_fmul(current_U,2), 
-        current_V
-      ),_1_SQRT3
-    );
-    // I_beta = qfp_fadd(current_U*2, current_V);
-
-    cosRad = qfp_fcos(angToRad);
-    sinRad = qfp_fsin(angToRad);
-    // cosRad = cos(angToRad);
-    // sinRad = sin(angToRad);
-
-    I_d = qfp_fadd( qfp_fmul(I_alpha, cosRad), qfp_fmul(I_beta, sinRad));
-    I_q = qfp_fsub( qfp_fmul(I_beta, cosRad), qfp_fmul(I_alpha, sinRad));
-    // I_d = I_alpha*cosRad + I_beta*sinRad;
-    // I_q = -I_alpha*sinRad + I_beta*cosRad;
-    
-    float d_ang = positon_Target - ang_temp;
-    if (d_ang > 180) {
-      d_ang = 360 - d_ang;
-    } else if (d_ang < -180) {
-      d_ang += 360;
-    }
-
-    // speed__Target = qfp_fsin(qfp_fmul(logCount++/30, 0.01745329251f))*10;
-
-    // if (logCount++ > 5) {
-    //   // printf("%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%.2f, %.2f, %.2f\n", 
-    //   //   ang_temp,I_q, I_d,current_W, current_U, current_V, ang_speed, U2, U3
-    //   // );
-    //   // positon_Target += 30;
-    //   // if (positon_Target >= 360) {
-    //   //   positon_Target -= 360;
-    //   // }
-    //   logCount = 0;
-      
-    //   speed__Target += test123;
-    //   // if (speed__Target > 10 || speed__Target < -10) {
-    //   //   speed__Target = -speed__Target;
-    //   // }
-    //   if (speed__Target > 10 || speed__Target < -10) {
-    //     test123 = -test123;
-    //   }
-    //   // Iq__Target += 0.1;
-    //   // ang_Target += 30;
-    //   // if (ang_Target >= 360) {
-    //   //   ang_Target -= 360;
-    //   // }
-    //   // if (ang_Target == 90) {
-    //   //   ang_Target = 270;
-    //   // } else {
-    //   //   ang_Target = 90;
-    //   // }
-    //   // speed__Target = -speed__Target;
-    //   // if (speed__Target == 0) {
-    //   //   speed__Target = 1./60.;
-    //   // }
-    //   // if (speed__Target == 1./60.) {
-    //   //   speed__Target = -1./60.;
-    //   // } else {
-    //   //   speed__Target = 1./60.;
-    //   // }
-    // } 
-
-
-    if (deviceMode == DeviceMode_PositionMode) {
-      float ang_error = positon_Target - ang_temp;
-      if (ang_error > 180) {
-        ang_error = 360.0f - ang_error;
-      } else if (ang_error < -180) {
-        ang_error += 360;
-      }
-      speed__Target = PIDController_process(&PID__position, ang_error);
-    }
-    if (speed__Target > 1 || speed__Target < -1) {
-      PID__velocity.P = 0.048;
-      PID__velocity.I = 0.0925;
-      Iq__Target = PIDController_process(&PID__velocity, speed__Target-ang_speed);
-    } 
-    else if (fabs(speed__Target) > 0.5 && fabs(speed__Target) <= 1) {
-      PID__velocity.P = 0.085;
-      PID__velocity.I = 0.75;
-      Iq__Target = PIDController_process(&PID__velocity, speed__Target-ang_speed);
-    } 
-    else {
-      PID__velocity.P = 0.2;
-      PID__velocity.I = 3.6;
-      Iq__Target = PIDController_process(&PID__velocity, speed__Target-ang_speed);
-    }
-    uq = PIDController_process(&PID__current_Iq, Iq__Target - I_q);
-    ud = PIDController_process(&PID__current_Id, -I_d);
-
-    
     if (deviceMode == DeviceMode_Stop) {
-      uq = 0;
-      ud = 0;
+      __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
+      __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
+      __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
+      ang_pre = -100;
     }
-
-    // Iq__Target = PIDController_process(&PID__velocity_01_05, speed__Target-ang_speed);
-    // Iq__Target = 0.1;
-
-    // uq = 0;
-    // uq = PIDController_process(&PID__current_Iq, Iq__Target - I_q);
-
-    // ud = 0;
-    // Id_Target = 0;
-    // ud = PIDController_process(&PID__current_Id, -I_d);
-    // ud = 0;
-    u_alpha = qfp_fsub( qfp_fmul(ud, cosRad), qfp_fmul(uq, sinRad));
-    u_beta = qfp_fadd( qfp_fmul(ud, sinRad), qfp_fmul(uq, cosRad));
-    // u_alpha = ud*cosRad-uq*sinRad;
-    // u_beta = ud*sinRad+uq*cosRad;
-
-
-    // speed__Target = 0.5;
-    Svpwm(u_alpha, u_beta);
+    else if (deviceMode == DeviceMode_SetAngShift) {
+      printf("Try to set angShift value, set motor to 0 ang\n");
+      SetAng(0);
+      HAL_Delay(500);
+      WriteAngShift(readAng(0));
+      angShift = ReadAngShift();
+      printf("New angShift: %d.%d\n", (int)(angShift*100)/100, (int)(angShift*100)%100);
+      deviceMode = DeviceMode_Stop;
+    } else {
+      DoFoc();
+    }
     // printf("%.2f,%.2f,%.2f,%.2f,%.4f,%.4f,%.4f,%.4f, %.4f, %.2f\n", 
     //   ang_temp,positon_Target,
     //   ang_speed, speed__Target,
     //   I_q, Iq__Target,current_W, current_U, current_V, I_d
     // );
+    
 
 
 
 
-    // 設定傳輸標頭
-    // TxHeader.StdId = 0x123; // 你的CAN ID (標準ID)
-    // TxHeader.RTR = CAN_RTR_DATA; // 數據幀
-    // TxHeader.IDE = CAN_ID_STD; // 標準ID
-    // TxHeader.DLC = 8; // 數據長度，最多8個位元組
 
     // // 設定要發送的數據
     // TxData[0] = TxData[0] + 1;
@@ -536,14 +391,14 @@ int main(void)
     // if (TxData[7] == 0xFF) {
     //   TxData[0] = 0x00; // 重置計數器
     // }
-
+    memcpy(TxData, &ang_speed, 4);
 
     // 發送訊息
-    // if (HAL_CAN_AddTxMessage(&hcan, &TxHeader, TxData, &TxMailbox) != HAL_OK) {
-    //     // 處理發送失敗的情況
-    //   printf("Cnan send message failed!\n");
-    //   Error_Handler();
-    // }
+    if (HAL_CAN_AddTxMessage(&hcan, &TxHeader, TxData, &TxMailbox) != HAL_OK) {
+        // 處理發送失敗的情況
+      // printf("Cnan send message failed!\n");
+      // Error_Handler();
+    }
   }
   /* USER CODE END 3 */
 }
@@ -894,71 +749,6 @@ static void MX_TIM2_Init(void)
 }
 
 /**
-  * @brief TIM4 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_TIM4_Init(void)
-{
-
-  /* USER CODE BEGIN TIM4_Init 0 */
-
-  /* USER CODE END TIM4_Init 0 */
-
-  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
-  TIM_SlaveConfigTypeDef sSlaveConfig = {0};
-  TIM_MasterConfigTypeDef sMasterConfig = {0};
-  TIM_OC_InitTypeDef sConfigOC = {0};
-
-  /* USER CODE BEGIN TIM4_Init 1 */
-
-  /* USER CODE END TIM4_Init 1 */
-  htim4.Instance = TIM4;
-  htim4.Init.Prescaler = 0;
-  htim4.Init.CounterMode = TIM_COUNTERMODE_CENTERALIGNED1;
-  htim4.Init.Period = 1800;
-  htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_Base_Init(&htim4) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
-  if (HAL_TIM_ConfigClockSource(&htim4, &sClockSourceConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_Init(&htim4) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sSlaveConfig.SlaveMode = TIM_SLAVEMODE_DISABLE;
-  sSlaveConfig.InputTrigger = TIM_TS_ITR0;
-  if (HAL_TIM_SlaveConfigSynchro(&htim4, &sSlaveConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sMasterConfig.MasterOutputTrigger = TIM_TRGO_UPDATE;
-  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-  if (HAL_TIMEx_MasterConfigSynchronization(&htim4, &sMasterConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 0;
-  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
-  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-  if (HAL_TIM_PWM_ConfigChannel(&htim4, &sConfigOC, TIM_CHANNEL_4) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN TIM4_Init 2 */
-
-  /* USER CODE END TIM4_Init 2 */
-
-}
-
-/**
   * @brief USART1 Initialization Function
   * @param None
   * @retval None
@@ -1195,16 +985,22 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
       // 接收失败处理
       Error_Handler();
     }
-    float test;
-    if (RxData[0] == 0) {
+    if (RxData[0] == STOP_MOTOR) {
       deviceMode = DeviceMode_Stop;
     }
-    else if (RxData[0] == 1) {
-      if (RxData[1] == 0) {
+    else if (RxData[0] == SET_ANG_SHIFT) {
+      deviceMode = DeviceMode_SetAngShift;
+    }
+    else if (RxData[0] == SET_SPEED) {
+      if (RxData[1] == Set_TargetVale) {
         memcpy(&speed__Target, &RxData[2], sizeof(float));
         deviceMode = DeviceMode_SpeedMode;
       }
     }
+    
+
+
+
     // // 在这里处理接收到的数据
     // // 例如：检查CAN ID，解析数据，更新变量等
     // if (RxHeader.StdId == 0x100)
@@ -1213,7 +1009,6 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
     //     // 打印接收到的数据
     //     // ...
     // }
-    int a = 0;
 }
 
 /* USER CODE END 4 */

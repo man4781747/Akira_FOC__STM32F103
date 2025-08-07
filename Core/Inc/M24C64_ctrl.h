@@ -3,6 +3,8 @@
 
 #include "main.h"
 
+#define PAGE__ANG_SHIFT 0
+
 extern I2C_HandleTypeDef hi2c1;
 
 HAL_StatusTypeDef M24C64_ReadData(uint8_t* dataBuffer, uint16_t page, uint16_t size) {
@@ -21,5 +23,19 @@ HAL_StatusTypeDef M24C64_WriteData(uint8_t* dataBuffer, uint16_t page, uint16_t 
   HAL_Delay(10);
   return M24C64_status;
 };
+
+float ReadAngShift() {
+  uint8_t M24C64_AngShift[4];
+  float angShift_float;
+  M24C64_ReadData(M24C64_AngShift, PAGE__ANG_SHIFT, 4);
+  memcpy(&angShift_float, M24C64_AngShift, 4);
+  return angShift_float;
+}
+
+void WriteAngShift(float AngShift) {
+  uint8_t M24C64_AngShift[4];
+  memcpy(M24C64_AngShift, &AngShift, 4);
+  M24C64_WriteData(M24C64_AngShift, PAGE__ANG_SHIFT, 4);
+}
 
 #endif

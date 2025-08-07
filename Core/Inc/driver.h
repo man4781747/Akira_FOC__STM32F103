@@ -4,19 +4,34 @@
 #include <math.h>
 #include <stdint.h>
 #include "main.h"
+#include "setting.h"
 #include "micro_timer.h"
 #include "qfplib-m3.h"
+#include "lowpass_filter.h"
+#include "PID_Ctrl.h"
+#include "sensor.h"
 
-
-#define _SQRT3_2 0.86602540378f
-#define _SQRT3 1.73205080757f
 
 // 由 main.c 提供
 extern TIM_HandleTypeDef htim1;
-// extern uint16_t pwmPluse_1;
-// extern uint16_t pwmPluse_2;
-// extern uint16_t pwmPluse_3;
-// int htim1.Init.Period = htim1.Init.Period; // TIM1 period ticks
+extern uint64_t old_ang_time, new_ang_time;
+extern float ang_pre, d_ang, ang_speed, ang_temp, angShift, angToRad;
+extern LowPassFilter filter_U, filter_V, filter_W, filter_Speed;
+extern float current_U, current_V, current_W;
+extern uint16_t adc_bios_W, adc_bios_U;
+extern float u_alpha, u_beta;
+extern float I_alpha, I_beta;
+extern float cosRad, sinRad;
+extern float I_d, I_q;
+extern float uq;
+extern float ud;
+extern float ang_temp, angToRad;
+extern float U1, U2, U3;
+extern float positon_Target,speed__Target, Iq__Target;
+extern enum DeviceMode deviceMode;
+extern PIDController PID__current_Id, PID__current_Iq, PID__velocity, PID__position;
+
+
 float pwmNum = 900.f;
 float fullTime = 0.5;
 
@@ -230,5 +245,155 @@ void Svpwm(float uAlpha, float uBeta){
   // runPWM(Ta, Tb, Tc);
 }
 
+void DoFoc() {
+  new_ang_time = micros();
+  ang_temp = readAng(angShift);
+  if (ang_pre == -100) {
+    ang_pre = ang_temp;
+    old_ang_time = new_ang_time-1;
+  }
 
+  d_ang = ang_temp - ang_pre;
+  if (d_ang > 180) {
+    d_ang -= 360;
+  } else if (d_ang < -180) {
+    d_ang += 360;
+  }
+  int dTime = (int)new_ang_time-(int)old_ang_time;
+  if (dTime <= 0) {
+    dTime += 65535;
+  }
+    
+  ang_speed = LowPassFilter_Update(&filter_Speed, d_ang/dTime*2777.777777777778f);
+  // ang_speed = d_ang/dTime*2777.777777777778f;
+  
+  ang_pre = ang_temp;
+  old_ang_time = new_ang_time;
+  // angToRad = ang_temp*7*0.01745329251f;
+  angToRad = qfp_fmul(qfp_fmul(ang_temp, 7), 0.01745329251f);
+
+  // uint16_t W_add = 0;
+  // uint16_t U_add = 0;
+  // for (int i = 0; i < ADC_BUF_SIZE_BUFFER; i++) {
+  //   W_add += adc_dma_buffer[2*i];
+  //   U_add += adc_dma_buffer[2*i+1];
+  // }
+  // W_add /= ADC_BUF_SIZE_BUFFER;
+  // U_add /= ADC_BUF_SIZE_BUFFER;
+
+  // current_W = qfp_fmul(adc_dma_buffer[0]-adc_bios_W, 0.0008056640625f);
+  // current_U = qfp_fmul(adc_dma_buffer[1]-adc_bios_U, 0.0008056640625f);
+  // current_V = qfp_fsub(-current_U, current_W);
+  current_W = LowPassFilter_Update(&filter_W, (float)(adc_dma_buffer[0]-adc_bios_W)*0.0008056640625f);
+  current_U = LowPassFilter_Update(&filter_U, (float)(adc_dma_buffer[1]-adc_bios_U)*0.0008056640625f);
+  current_V = LowPassFilter_Update(&filter_V, -current_U - current_W);
+
+
+
+  I_alpha = current_V;
+  I_beta = qfp_fmul(
+    qfp_fadd(
+      qfp_fmul(current_U,2), 
+      current_V
+    ),_1_SQRT3
+  );
+  // I_beta = qfp_fadd(current_U*2, current_V);
+
+  cosRad = qfp_fcos(angToRad);
+  sinRad = qfp_fsin(angToRad);
+  // cosRad = cos(angToRad);
+  // sinRad = sin(angToRad);
+
+  I_d = qfp_fadd( qfp_fmul(I_alpha, cosRad), qfp_fmul(I_beta, sinRad));
+  I_q = qfp_fsub( qfp_fmul(I_beta, cosRad), qfp_fmul(I_alpha, sinRad));
+  // I_d = I_alpha*cosRad + I_beta*sinRad;
+  // I_q = -I_alpha*sinRad + I_beta*cosRad;
+  
+  float d_ang = positon_Target - ang_temp;
+  if (d_ang > 180) {
+    d_ang = 360 - d_ang;
+  } else if (d_ang < -180) {
+    d_ang += 360;
+  }
+
+  // speed__Target = qfp_fsin(qfp_fmul(logCount++/30, 0.01745329251f))*10;
+
+  // if (logCount++ > 5) {
+  //   // printf("%.2f,%.4f,%.4f,%.4f,%.4f,%.4f,%.2f, %.2f, %.2f\n", 
+  //   //   ang_temp,I_q, I_d,current_W, current_U, current_V, ang_speed, U2, U3
+  //   // );
+  //   // positon_Target += 30;
+  //   // if (positon_Target >= 360) {
+  //   //   positon_Target -= 360;
+  //   // }
+  //   logCount = 0;
+    
+  //   speed__Target += test123;
+  //   // if (speed__Target > 10 || speed__Target < -10) {
+  //   //   speed__Target = -speed__Target;
+  //   // }
+  //   if (speed__Target > 10 || speed__Target < -10) {
+  //     test123 = -test123;
+  //   }
+  //   // Iq__Target += 0.1;
+  //   // ang_Target += 30;
+  //   // if (ang_Target >= 360) {
+  //   //   ang_Target -= 360;
+  //   // }
+  //   // if (ang_Target == 90) {
+  //   //   ang_Target = 270;
+  //   // } else {
+  //   //   ang_Target = 90;
+  //   // }
+  //   // speed__Target = -speed__Target;
+  //   // if (speed__Target == 0) {
+  //   //   speed__Target = 1./60.;
+  //   // }
+  //   // if (speed__Target == 1./60.) {
+  //   //   speed__Target = -1./60.;
+  //   // } else {
+  //   //   speed__Target = 1./60.;
+  //   // }
+  // } 
+
+
+  if (deviceMode == DeviceMode_PositionMode) {
+    float ang_error = positon_Target - ang_temp;
+    if (ang_error > 180) {
+      ang_error = 360.0f - ang_error;
+    } else if (ang_error < -180) {
+      ang_error += 360;
+    }
+    speed__Target = PIDController_process(&PID__position, ang_error);
+  }
+  if (speed__Target > 1 || speed__Target < -1) {
+    PID__velocity.P = 0.048;
+    PID__velocity.I = 0.0925;
+    Iq__Target = PIDController_process(&PID__velocity, speed__Target-ang_speed);
+  } 
+  else if (fabs(speed__Target) > 0.5 && fabs(speed__Target) <= 1) {
+    PID__velocity.P = 0.085;
+    PID__velocity.I = 0.75;
+    Iq__Target = PIDController_process(&PID__velocity, speed__Target-ang_speed);
+  } 
+  else {
+    PID__velocity.P = 0.2;
+    PID__velocity.I = 3.6;
+    Iq__Target = PIDController_process(&PID__velocity, speed__Target-ang_speed);
+  }
+  uq = PIDController_process(&PID__current_Iq, Iq__Target - I_q);
+  ud = PIDController_process(&PID__current_Id, -I_d);
+
+  u_alpha = qfp_fsub( qfp_fmul(ud, cosRad), qfp_fmul(uq, sinRad));
+  u_beta = qfp_fadd( qfp_fmul(ud, sinRad), qfp_fmul(uq, cosRad));
+  // u_alpha = ud*cosRad-uq*sinRad;
+  // u_beta = ud*sinRad+uq*cosRad;
+
+  Svpwm(u_alpha, u_beta);
+  // printf("%.2f,%.2f,%.2f,%.2f,%.4f,%.4f,%.4f,%.4f, %.4f, %.2f\n", 
+  //   ang_temp,positon_Target,
+  //   ang_speed, speed__Target,
+  //   I_q, Iq__Target,current_W, current_U, current_V, I_d
+  // );
+}
 #endif
