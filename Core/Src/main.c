@@ -352,23 +352,24 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    if (deviceMode == DeviceMode_Stop) {
-      __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
-      __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
-      __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
-      ang_pre = -100;
-    }
-    else if (deviceMode == DeviceMode_SetAngShift) {
-      printf("Try to set angShift value, set motor to 0 ang\n");
-      SetAng(0);
-      HAL_Delay(500);
-      WriteAngShift(readAng(0));
-      angShift = ReadAngShift();
-      printf("New angShift: %d.%d\n", (int)(angShift*100)/100, (int)(angShift*100)%100);
-      deviceMode = DeviceMode_Stop;
-    } else {
-      DoFoc();
-    }
+    // if (deviceMode == DeviceMode_Stop) {
+    //   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
+    //   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
+    //   __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
+    //   ang_pre = -100;
+    // }
+    // else if (deviceMode == DeviceMode_SetAngShift) {
+    //   printf("Try to set angShift value, set motor to 0 ang\n");
+    //   SetAng(0);
+    //   HAL_Delay(500);
+    //   WriteAngShift(readAng(0));
+    //   angShift = ReadAngShift();
+    //   printf("New angShift: %d.%d\n", (int)(angShift*100)/100, (int)(angShift*100)%100);
+    //   deviceMode = DeviceMode_Stop;
+    // } else {
+    //   DoFoc();
+    // }
+    DoFoc();
     // printf("%.2f,%.2f,%.2f,%.2f,%.4f,%.4f,%.4f,%.4f, %.4f, %.2f\n", 
     //   ang_temp,positon_Target,
     //   ang_speed, speed__Target,
