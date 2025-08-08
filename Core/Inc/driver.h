@@ -30,6 +30,10 @@ extern float U1, U2, U3;
 extern float positon_Target,speed__Target, Iq__Target;
 extern enum DeviceMode deviceMode;
 extern PIDController PID__current_Id, PID__current_Iq, PID__velocity, PID__position;
+extern float exf;
+extern float exf_map[360];
+// extern float cogging_calibration_map[360];
+
 
 int logCount = 0;
 float pwmNum = 900.f;
@@ -264,7 +268,7 @@ void DoFoc() {
     dTime += 65535;
   }
     
-  ang_speed = LowPassFilter_Update(&filter_Speed, d_ang/dTime*2777.777777777778f);
+  ang_speed = LowPassFilter_Update(&filter_Speed, qfp_fmul(qfp_fdiv(d_ang,dTime),2777.777777777778f));
   // ang_speed = d_ang/dTime*2777.777777777778f;
   
   ang_pre = ang_temp;
@@ -358,50 +362,79 @@ void DoFoc() {
 
 
   if (deviceMode == DeviceMode_PositionMode) {
-    float ang_error = positon_Target - ang_temp;
+    float ang_error = qfp_fsub(positon_Target, ang_temp);
     if (ang_error > 180) {
-      ang_error = 360.0f - ang_error;
+      ang_error = qfp_fsub(360.0f , ang_error);
     } else if (ang_error < -180) {
-      ang_error += 360;
+      ang_error= qfp_fadd(ang_error, 360.0f);
     }
     // PID
     // speed__Target = PIDController_process(&PID__position, ang_error);
     // MIT
-    Iq__Target = 0.f + 0.01f * ang_error + 0.15f * (-ang_speed);
+    Iq__Target = exf_map[(int)positon_Target] + exf + qfp_fadd(qfp_fmul(0.01f, ang_error) , qfp_fmul(0.15f ,-ang_speed));
     // Iq__Target = 0.f + 0.0005f * (fabs(ang_error)*ang_error) + 0.04f * (-ang_speed*fabs(ang_speed));
   }
-  if (speed__Target > 1 || speed__Target < -1) {
-    PID__velocity.P = 0.048;
-    PID__velocity.I = 0.0925;
-    Iq__Target = PIDController_process(&PID__velocity, speed__Target-ang_speed);
-  } 
-  else if (fabs(speed__Target) > 0.5 && fabs(speed__Target) <= 1) {
-    PID__velocity.P = 0.085;
-    PID__velocity.I = 0.75;
-    Iq__Target = PIDController_process(&PID__velocity, speed__Target-ang_speed);
-  } 
   else {
-    PID__velocity.P = 0.2;
-    PID__velocity.I = 3.6;
-    Iq__Target = PIDController_process(&PID__velocity, speed__Target-ang_speed);
+    if (speed__Target > 1 || speed__Target < -1) {
+      PID__velocity.P = 0.048;
+      PID__velocity.I = 0.0925;
+      // Iq__Target = exf_map[(int)ang_temp] + PIDController_process(&PID__velocity, qfp_fsub(speed__Target,ang_speed));
+      Iq__Target = PIDController_process(&PID__velocity, qfp_fsub(speed__Target,ang_speed));
+    } 
+    else if (fabs(speed__Target) > 0.5 && fabs(speed__Target) <= 1) {
+      PID__velocity.P = 0.085;
+      PID__velocity.I = 0.75;
+      // Iq__Target = exf_map[(int)ang_temp] + PIDController_process(&PID__velocity, qfp_fsub(speed__Target,ang_speed));
+      Iq__Target = PIDController_process(&PID__velocity, qfp_fsub(speed__Target,ang_speed));
+    } 
+    else {
+      // PID__velocity.P = 0.2;
+      // PID__velocity.I = 3.6;
+
+      PID__velocity.P = 0.4;
+      PID__velocity.I = 0.08;
+      PID__velocity.D = 0.001;
+
+      // PID__velocity.P = 0.523;
+      // PID__velocity.I = 0.025;
+      // PID__velocity.D = 0.00;
+
+      Iq__Target = exf_map[(int)ang_temp] + PIDController_process(&PID__velocity, qfp_fsub(speed__Target,ang_speed));
+      // Iq__Target = PIDController_process(&PID__velocity, qfp_fsub(speed__Target,ang_speed));
+    }
   }
+  // if (speed__Target > 1 || speed__Target < -1) {
+  //   PID__velocity.P = 0.048;
+  //   PID__velocity.I = 0.0925;
+  //   Iq__Target = PIDController_process(&PID__velocity, qfp_fsub(speed__Target,ang_speed));
+  // } 
+  // else if (fabs(speed__Target) > 0.5 && fabs(speed__Target) <= 1) {
+  //   PID__velocity.P = 0.085;
+  //   PID__velocity.I = 0.75;
+  //   Iq__Target = PIDController_process(&PID__velocity, qfp_fsub(speed__Target,ang_speed));
+  // } 
+  // else {
+  //   // PID__velocity.P = 0.2;
+  //   // PID__velocity.I = 3.6;
+  //   PID__velocity.P = 0.2;
+  //   PID__velocity.I = 3.6;
+  //   Iq__Target =  PIDController_process(&PID__velocity, qfp_fsub(speed__Target,ang_speed));
+  // }
 
-  int test = 360/10;
-  positon_Target = (((int)ang_temp)/test)*test + test/2;
 
-
-  float ang_error = positon_Target - ang_temp;
-  if (ang_error > 180) {
-    ang_error = 360.0f - ang_error;
-  } else if (ang_error < -180) {
-    ang_error += 360;
-  }
   // MIT 測試
-  Iq__Target = 0.f + 0.01f * ang_error + 0.15f * (-ang_speed);
-  // Iq__Target = 0.f + 0.0005f * (fabs(ang_error)*ang_error) + 0.04f * (-ang_speed*fabs(ang_speed));
+  // int test = 360/10;
+  // positon_Target = (((int)ang_temp)/test)*test + test/2;
+  // float ang_error = positon_Target - ang_temp;
+  // if (ang_error > 180) {
+  //   ang_error = 360.0f - ang_error;
+  // } else if (ang_error < -180) {
+  //   ang_error += 360;
+  // }
+  // Iq__Target = qfp_fadd(qfp_fmul(0.01f, ang_error) , qfp_fmul(0.15f ,-ang_speed));
 
 
-  uq = PIDController_process(&PID__current_Iq, Iq__Target - I_q);
+  uq = PIDController_process(&PID__current_Iq, qfp_fsub(Iq__Target, I_q));
   ud = PIDController_process(&PID__current_Id, -I_d);
 
   u_alpha = qfp_fsub( qfp_fmul(ud, cosRad), qfp_fmul(uq, sinRad));

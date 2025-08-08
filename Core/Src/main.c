@@ -174,6 +174,9 @@ void CAN_Filter_Config(){
   }
 }
 
+float exf_map[360] = {0};
+float exf = 0.0f;
+
 /* USER CODE END 0 */
 
 /**
@@ -217,6 +220,10 @@ int main(void)
 
   // UART1 RX 初始化 - 使用 DMA
   HAL_UARTEx_ReceiveToIdle_DMA(&huart1, uart_rx_buffer, sizeof(uart_rx_buffer));
+
+  ReadPreF(exf_map);
+  HAL_Delay(100);
+
 
   // 時鐘計時設定
   init_micros_timer();
@@ -343,6 +350,101 @@ int main(void)
 
 
 
+
+  // deviceMode = DeviceMode_PositionMode;
+  // positon_Target = 359.5;
+  // int check_count = 0;
+  // while (1) {
+  //   DoFoc();
+  //   check_count++;
+
+  //   if (check_count > 1000) {
+  //     break;
+  //   }
+  // }
+  // HAL_Delay(2000);
+
+
+  // positon_Target = 359;
+  // check_count = 0;
+  // while (1) {
+  //   DoFoc();
+  //   float ang_error = qfp_fsub(positon_Target, ang_temp);
+  //   if (ang_error > 180) {
+  //     ang_error = qfp_fsub(360.0f , ang_error);
+  //   } else if (ang_error < -180) {
+  //     ang_error= qfp_fadd(ang_error, 360.0f);
+  //   }
+  //   printf("%.4f, %.4f, %.4f, %.4f, %.4f\n", positon_Target, ang_temp, ang_error, Iq__Target, exf);
+  //   if (ang_error > 0) {
+  //     exf += 0.0001;
+  //     check_count = 999;
+  //   } else {
+  //     exf -= 0.0001;
+  //     if (fabs(ang_error) < 0.15 ) {
+  //       check_count += 1;
+  //     } else {
+  //       check_count = 0;
+  //     }
+
+  //   }
+
+  //   if (check_count > 100) {
+  //     check_count = 0;
+  //     exf_map[(int)positon_Target] = Iq__Target;
+  //     positon_Target -= 1;
+  //     exf = 0;
+  //     if (positon_Target < 0) {
+  //       break;
+  //     }
+  //   }
+  // }
+  // WritePreF(exf_map);
+  // HAL_Delay(1000);
+  // positon_Target = 359;
+  // check_count = 0;
+  // while (1) {
+  //   DoFoc();
+  //   float ang_error = qfp_fsub(positon_Target, ang_temp);
+  //   if (ang_error > 180) {
+  //     ang_error = qfp_fsub(360.0f , ang_error);
+  //   } else if (ang_error < -180) {
+  //     ang_error= qfp_fadd(ang_error, 360.0f);
+  //   }
+  //   printf("%.4f, %.4f, %.4f, %.4f, %.4f\n", positon_Target, ang_temp, ang_error, Iq__Target, exf);
+  //   if (ang_error > 0) {
+  //     exf += 0.0001;
+  //     check_count = 999;
+  //   } else {
+  //     exf -= 0.0001;
+  //     if (fabs(ang_error) < 0.15 ) {
+  //       check_count += 1;
+  //     } else {
+  //       check_count = 0;
+  //     }
+
+  //   }
+
+  //   if (check_count > 100) {
+  //     check_count = 0;
+  //     positon_Target -= 1;
+  //     exf = 0;
+  //     if (positon_Target < 0) {
+  //       break;
+  //     }
+  //   }
+  // }
+
+
+  // for (int i=0;i<360;i++){
+  //   printf("%d, %f\n",i,exf_map[i]);
+  //   HAL_Delay(1);
+  // }
+
+  // HAL_Delay(1000000);
+  deviceMode = DeviceMode_SpeedMode;
+  speed__Target = -4/60.;
+  exf = 0;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -370,11 +472,11 @@ int main(void)
     //   DoFoc();
     // }
     DoFoc();
-    // printf("%.2f,%.2f,%.2f,%.2f,%.4f,%.4f,%.4f,%.4f, %.4f, %.2f\n", 
-    //   ang_temp,positon_Target,
-    //   ang_speed, speed__Target,
-    //   I_q, Iq__Target,current_W, current_U, current_V, I_d
-    // );
+    printf("%.2f,%.2f,%.2f,%.2f,%.4f,%.4f,%.4f,%.4f, %.4f, %.2f\n", 
+      ang_temp,positon_Target,
+      ang_speed, speed__Target,
+      I_q, Iq__Target,current_W, current_U, current_V, I_d
+    );
     
 
 
@@ -392,14 +494,14 @@ int main(void)
     // if (TxData[7] == 0xFF) {
     //   TxData[0] = 0x00; // 重置計數器
     // }
-    memcpy(TxData, &ang_speed, 4);
+    // memcpy(TxData, &ang_speed, 4);
 
-    // 發送訊息
-    if (HAL_CAN_AddTxMessage(&hcan, &TxHeader, TxData, &TxMailbox) != HAL_OK) {
-        // 處理發送失敗的情況
-      // printf("Cnan send message failed!\n");
-      // Error_Handler();
-    }
+    // // 發送訊息
+    // if (HAL_CAN_AddTxMessage(&hcan, &TxHeader, TxData, &TxMailbox) != HAL_OK) {
+    //     // 處理發送失敗的情況
+    //   // printf("Cnan send message failed!\n");
+    //   // Error_Handler();
+    // }
   }
   /* USER CODE END 3 */
 }
