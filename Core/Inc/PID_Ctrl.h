@@ -2,10 +2,11 @@
 #define PID_CTRL_H
 
 #include <stdint.h> // For uint32_t (for timestamp_prev)
-#include "micro_timer.h" 
-#include "qfplib-m3.h"
+#include "micro_timer.h"
 
-float constrain(float amt, float low, float high) {
+// 與後代 (STM32F446RE_TEST) 的 PID_Ctrl.h 相同，把函式都改成 static inline，另加 PIDController_runTs()
+
+static inline float constrain(float amt, float low, float high) {
     if (amt < low) return low;
     if (amt > high) return high;
     return amt;
@@ -33,17 +34,7 @@ typedef struct {
     uint32_t timestamp_prev; //!< Last execution timestamp (using uint32_t for micros() return type)
 } PIDController;
 
-/**
- * @brief Initializes a PIDController instance.
- *
- * @param ctrl A pointer to the PIDController structure to initialize.
- * @param P_val Proportional gain.
- * @param I_val Integral gain.
- * @param D_val Derivative gain.
- * @param ramp_val Maximum speed of change of the output value.
- * @param limit_val Maximum output value.
- */
-void PIDController_init(PIDController* ctrl, float P_val, float I_val, float D_val, float ramp_val, float limit_val) {
+static inline void PIDController_init(PIDController* ctrl, float P_val, float I_val, float D_val, float ramp_val, float limit_val) {
     ctrl->P = P_val;
     ctrl->I = I_val;
     ctrl->D = D_val;
@@ -53,87 +44,139 @@ void PIDController_init(PIDController* ctrl, float P_val, float I_val, float D_v
     ctrl->error_prev = 0.0f;
     ctrl->output_prev = 0.0f;
     ctrl->integral_prev = 0.0f;
-    ctrl->timestamp_prev = micros(); // Initialize with current time
-};
+    ctrl->timestamp_prev = (uint32_t)micros(); // Initialize with current time
+}
 
 /**
  * @brief Processes the PID control logic with a new error value.
  *
- * This function simulates the operator() overload in C++.
- *
  * @param ctrl A pointer to the PIDController structure.
  * @param error The current tracking error.
+ * @param anti_windup 非 0 時，輸出頂到 limit 而且誤差還在把它往外推的那一次不累加積分。
  * @return The calculated PID output value.
  */
-float PIDController_process(PIDController* ctrl, float error) {
-    // calculate the time from the last call
-    uint32_t timestamp_now = micros();
+static inline float PIDController_run(PIDController* ctrl, float error, int anti_windup) {
+    uint32_t timestamp_now = (uint32_t)micros();
+    uint32_t dt = timestamp_now - ctrl->timestamp_prev; // 處理 unsigned 差值自動溢位
+    float Ts = (float)dt * 1e-6f;
 
-
-    float Ts = qfp_fmul(qfp_fsub(timestamp_now, ctrl->timestamp_prev), 1e-6f);
-    // float Ts = (float)(timestamp_now - ctrl->timestamp_prev) * 1e-6f; // Convert microseconds to seconds
-
-    // quick fix for strange cases (micros overflow or large initial dt)
-    if (Ts <= 0.0f || Ts > 0.5f) { // Time wrapped around, error, or very large dt
-        Ts = 1e-3f; // Default to 1ms, or a more appropriate small value
+    if (Ts <= 0.0f || Ts > 0.5f) {
+        Ts = 1e-3f;
     }
 
-    // u(s) = (P + I/s + Ds)e(s)
-    // Discrete implementations
-    // proportional part
-    // u_p = P *e(k)
-    float proportional = qfp_fmul(ctrl->P , error);
-    // float proportional = ctrl->P * error;
+    /* 只做一次除法，使用 invTs 重複使用 */
+    float invTs = 1.0f / Ts;
+    float halfTs = 0.5f * Ts;
 
-    // Tustin transform of the integral part
-    // u_ik = u_ik_1 + I*Ts/2*(ek + ek_1)
-    float integral = qfp_fadd(ctrl->integral_prev, qfp_fmul(qfp_fmul(ctrl->I , Ts),qfp_fmul(0.5f, qfp_fadd(error , ctrl->error_prev))));
-    // float integral = ctrl->integral_prev + ctrl->I * Ts * 0.5f * (error + ctrl->error_prev);
+    /* 將參數與狀態先複製到暫存變數以減少結構存取次數 */
+    float P = ctrl->P;
+    float I = ctrl->I;
+    float D = ctrl->D;
+    float limit = ctrl->limit;
+    float output_prev = ctrl->output_prev;
+    float error_prev = ctrl->error_prev;
+    float integral_prev = ctrl->integral_prev;
+    float output_ramp = ctrl->output_ramp;
 
+    /* 比例項 */
+    float proportional = P * error;
 
-    // antiwindup - limit the output
-    integral = constrain(integral, -ctrl->limit, ctrl->limit);
+    /* 積分項 (Tustin) */
+    float integral = integral_prev + I * halfTs * (error + error_prev);
 
-    // Discrete derivation
-    // u_dk = D(ek - ek_1)/Ts
-    float derivative = qfp_fdiv(qfp_fmul(ctrl->D , qfp_fsub(error , ctrl->error_prev)) , Ts);
-    // float derivative = ctrl->D * (error - ctrl->error_prev) / Ts;
+    /* anti-windup (inline) */
+    if (integral > limit) integral = limit;
+    else if (integral < -limit) integral = -limit;
 
-    // sum all the components
-    float output = qfp_fadd(qfp_fadd(proportional , integral) , derivative);
-    // float output = proportional + integral + derivative;
-    // antiwindup - limit the output variable
-    output = constrain(output, -ctrl->limit, ctrl->limit);
+    /* 微分項，使用 invTs 減少一次除法 */
+    float derivative = D * (error - error_prev) * invTs;
 
-    // if output ramp defined
-    if (ctrl->output_ramp > 0.0f) {
-        // limit the acceleration by ramping the output
-        float output_rate = (output - ctrl->output_prev) / Ts;
-        if (output_rate > ctrl->output_ramp) {
-            output = ctrl->output_prev + ctrl->output_ramp * Ts;
-        } else if (output_rate < -ctrl->output_ramp) {
-            output = ctrl->output_prev - ctrl->output_ramp * Ts;
+    /* 合成輸出並限制 (inline) */
+    float output = proportional + integral + derivative;
+    if (output > limit) {
+        if (anti_windup && error > 0.0f) integral = integral_prev;
+        output = limit;
+    } else if (output < -limit) {
+        if (anti_windup && error < 0.0f) integral = integral_prev;
+        output = -limit;
+    }
+
+    /* 輸出斜率限制（若啟用） - 使用 invTs 避免二次除法 */
+    if (output_ramp > 0.0f) {
+        float output_rate = (output - output_prev) * invTs; // [unit/sec]
+        if (output_rate > output_ramp) {
+            output = output_prev + output_ramp * Ts;
+        } else if (output_rate < -output_ramp) {
+            output = output_prev - output_ramp * Ts;
         }
     }
-    
-    // Saving for the next pass
+
+    /* 儲存狀態 */
     ctrl->integral_prev = integral;
     ctrl->output_prev = output;
     ctrl->error_prev = error;
     ctrl->timestamp_prev = timestamp_now;
 
     return output;
-};
+}
+
+static inline float PIDController_process(PIDController* ctrl, float error) {
+    return PIDController_run(ctrl, error, 0);
+}
+
+/**
+ * @brief 這一代 (F103) 加的：和 PIDController_run() 相同的計算，但取樣時間由呼叫者給 (固定週期的 FOC 中斷用)。
+ *        沒有 FPU，micros() 與每次的除法太花時間。D = 0 時不算微分項，output_ramp = 0 時不做斜率限制
+ *
+ * @param Ts 取樣時間 (秒)
+ * @param invTs 1 / Ts
+ */
+static inline float PIDController_runTs(PIDController* ctrl, float error, float Ts, float invTs, int anti_windup) {
+    float limit = ctrl->limit;
+    float error_prev = ctrl->error_prev;
+    float integral_prev = ctrl->integral_prev;
+
+    /* 積分項 (Tustin) */
+    float integral = integral_prev + ctrl->I * (0.5f * Ts) * (error + error_prev);
+    if (integral > limit) integral = limit;
+    else if (integral < -limit) integral = -limit;
+
+    float output = ctrl->P * error + integral;
+    if (ctrl->D != 0.0f) {
+        output += ctrl->D * (error - error_prev) * invTs;
+    }
+    if (output > limit) {
+        if (anti_windup && error > 0.0f) integral = integral_prev;
+        output = limit;
+    } else if (output < -limit) {
+        if (anti_windup && error < 0.0f) integral = integral_prev;
+        output = -limit;
+    }
+
+    float output_ramp = ctrl->output_ramp;
+    if (output_ramp > 0.0f) {
+        float output_prev = ctrl->output_prev;
+        float output_rate = (output - output_prev) * invTs;
+        if (output_rate > output_ramp) {
+            output = output_prev + output_ramp * Ts;
+        } else if (output_rate < -output_ramp) {
+            output = output_prev - output_ramp * Ts;
+        }
+    }
+
+    ctrl->integral_prev = integral;
+    ctrl->output_prev = output;
+    ctrl->error_prev = error;
+    return output;
+}
 
 /**
  * @brief Resets the internal state of the PID controller (integral, previous error, previous output).
- *
- * @param ctrl A pointer to the PIDController structure.
  */
-void PIDController_reset(PIDController* ctrl) {
+static inline void PIDController_reset(PIDController* ctrl) {
     ctrl->integral_prev = 0.0f;
     ctrl->output_prev = 0.0f;
     ctrl->error_prev = 0.0f;
-};
+}
 
 #endif // PID_CTRL_H

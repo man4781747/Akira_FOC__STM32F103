@@ -1,0 +1,712 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>STM32F103 FOC 設計文件</title>
+<style>
+:root{
+  --bg:#fbfaf7; --surface:#ffffff; --surface2:#f3f1ec; --text:#1d1f23; --muted:#5d6370;
+  --border:#dcd8cf; --accent:#2756c5; --accent-soft:#e6edfb;
+  --ok:#1f7a4d; --ok-soft:#e3f3ea; --warn:#9a6200; --warn-soft:#fbf0d9;
+  --bad:#b3261e; --bad-soft:#fbe5e3; --todo:#6b3fb5; --todo-soft:#efe7fb;
+  --code-bg:#f1efe9;
+  --mono:ui-monospace,SFMono-Regular,Consolas,"Cascadia Mono",monospace;
+  --sans:system-ui,-apple-system,"Segoe UI","Noto Sans TC","Microsoft JhengHei",sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#15171b; --surface:#1d2025; --surface2:#24282e; --text:#e6e7ea; --muted:#a0a6b1;
+    --border:#353a42; --accent:#7ea2ff; --accent-soft:#1f2a44;
+    --ok:#6fcf9b; --ok-soft:#183026; --warn:#f0b955; --warn-soft:#352a14;
+    --bad:#ff8a80; --bad-soft:#3a1d1b; --todo:#c3a3ff; --todo-soft:#2b2240;
+    --code-bg:#262a31;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#15171b; --surface:#1d2025; --surface2:#24282e; --text:#e6e7ea; --muted:#a0a6b1;
+  --border:#353a42; --accent:#7ea2ff; --accent-soft:#1f2a44;
+  --ok:#6fcf9b; --ok-soft:#183026; --warn:#f0b955; --warn-soft:#352a14;
+  --bad:#ff8a80; --bad-soft:#3a1d1b; --todo:#c3a3ff; --todo-soft:#2b2240;
+  --code-bg:#262a31;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--text);font-family:var(--sans);font-size:15.5px;line-height:1.7}
+.layout{display:grid;grid-template-columns:240px minmax(0,1fr);max-width:1200px;margin:0 auto;gap:40px;padding:32px 24px}
+nav.toc{position:sticky;top:24px;align-self:start;font-size:14px;max-height:calc(100vh - 48px);overflow:auto}
+nav.toc .ttl{font-weight:600;color:var(--muted);font-size:12px;letter-spacing:.06em;margin-bottom:8px}
+nav.toc ol{list-style:none;margin:0;padding:0}
+nav.toc li a{display:block;padding:4px 10px;border-left:2px solid var(--border);color:var(--muted);text-decoration:none}
+nav.toc li a:hover{color:var(--accent);border-left-color:var(--accent)}
+main{min-width:0}
+header.doc{border-bottom:1px solid var(--border);padding-bottom:20px;margin-bottom:12px}
+header.doc h1{font-size:30px;margin:0 0 6px;line-height:1.3}
+header.doc p{margin:0;color:var(--muted)}
+h2{font-size:22px;margin:48px 0 14px;padding-top:8px;border-top:1px solid var(--border)}
+h3{font-size:17px;margin:28px 0 10px}
+p{margin:10px 0}
+a{color:var(--accent)}
+code,kbd{font-family:var(--mono);font-size:.88em;background:var(--code-bg);padding:1px 5px;border-radius:4px}
+pre{font-family:var(--mono);font-size:13px;background:var(--code-bg);padding:14px 16px;border-radius:8px;overflow-x:auto;line-height:1.55;border:1px solid var(--border)}
+pre code{background:none;padding:0}
+.tbl{overflow-x:auto;margin:12px 0;border:1px solid var(--border);border-radius:8px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:7px 12px;border-bottom:1px solid var(--border);vertical-align:top}
+th{background:var(--surface2);font-weight:600;white-space:nowrap}
+tr:last-child td{border-bottom:none}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+td code{white-space:nowrap}
+.kpis{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:12px;margin:18px 0}
+.kpi{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px}
+.kpi .v{font-size:22px;font-weight:650;font-variant-numeric:tabular-nums}
+.kpi .l{font-size:13px;color:var(--muted)}
+.tag{display:inline-block;font-size:12px;font-weight:600;padding:1px 8px;border-radius:999px;white-space:nowrap}
+.t-ok{background:var(--ok-soft);color:var(--ok)}
+.t-warn{background:var(--warn-soft);color:var(--warn)}
+.t-bad{background:var(--bad-soft);color:var(--bad)}
+.t-todo{background:var(--todo-soft);color:var(--todo)}
+.t-dim{background:var(--surface2);color:var(--muted)}
+.note{border-left:3px solid var(--accent);background:var(--accent-soft);padding:10px 14px;border-radius:0 8px 8px 0;margin:14px 0}
+.note.warn{border-color:var(--warn);background:var(--warn-soft)}
+.note.bad{border-color:var(--bad);background:var(--bad-soft)}
+.note.todo{border-color:var(--todo);background:var(--todo-soft)}
+.issue{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin:12px 0}
+.issue h4{margin:0 0 6px;font-size:15.5px;display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.issue p{margin:6px 0}
+.issue .loc{font-size:13px;color:var(--muted)}
+figure{margin:16px 0;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:14px;overflow-x:auto}
+figcaption{font-size:13px;color:var(--muted);margin-top:8px}
+svg text{font-family:var(--sans);fill:var(--text)}
+svg .box{fill:var(--surface2);stroke:var(--border);stroke-width:1.2}
+svg .box.hl{fill:var(--accent-soft);stroke:var(--accent)}
+svg .box.off{fill:none;stroke:var(--border);stroke-dasharray:4 3}
+svg .box.bad{fill:var(--bad-soft);stroke:var(--bad)}
+svg .ln{stroke:var(--muted);stroke-width:1.4;fill:none}
+svg .ln.acc{stroke:var(--accent)}
+svg .ln.bad{stroke:var(--bad)}
+svg .sm{font-size:11px;fill:var(--muted)}
+svg .md{font-size:13px}
+svg .ar{fill:var(--muted)}
+.theme-btn{position:fixed;right:16px;bottom:16px;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:999px;padding:6px 12px;font-size:13px;cursor:pointer}
+@media (max-width:860px){
+  .layout{grid-template-columns:1fr;padding:20px 16px;gap:0}
+  nav.toc{position:static;max-height:none;border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:12px;background:var(--surface)}
+  header.doc h1{font-size:24px}
+}
+</style>
+</head>
+<body>
+<div class="layout">
+<nav class="toc" aria-label="目錄">
+  <div class="ttl">目錄</div>
+  <ol>
+    <li><a href="#overview">1. 總覽與關鍵數字</a></li>
+    <li><a href="#hw">2. 硬體架構</a></li>
+    <li><a href="#clock">3. 時鐘樹</a></li>
+    <li><a href="#pins">4. 腳位配置</a></li>
+    <li><a href="#periph">5. 周邊 / Bus 設定</a></li>
+    <li><a href="#foc">6. FOC 控制架構</a></li>
+    <li><a href="#params">7. 控制參數一覽</a></li>
+    <li><a href="#timing">8. 中斷與時序</a></li>
+    <li><a href="#boot">9. 啟動流程</a></li>
+    <li><a href="#can">10. CAN Bus 指令</a></li>
+    <li><a href="#eeprom">11. EEPROM</a></li>
+    <li><a href="#files">12. 軟體檔案結構</a></li>
+    <li><a href="#issues">13. 已知問題與處理狀態</a></li>
+    <li><a href="#align">14. 與後代的差異與對齊計畫</a></li>
+    <li><a href="#todo">15. 待確認事項</a></li>
+    <li><a href="#build">16. 建置、燒錄與工具</a></li>
+    <li><a href="#cmd">17. 指令與後代的差異</a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="doc">
+  <h1>STM32F103 無刷馬達 FOC 驅動：設計文件</h1>
+  <p>專案 <code>STM32_FOC</code>，以 STM32CubeMX 6.15.0 產生、CMake + GCC 建置。後代產品是 <code>STM32F446RE_TEST</code>（以下簡稱「後代」），本文件的版型與章節順序沿用後代的 <code>doc/設計文件.html</code>，方便兩代對照。</p>
+  <p style="margin-top:8px">2026-10-14 依第 14.4 節的<strong>階段 1、2</strong>改寫了韌體（以 commit <code>dda3387</code> 為基礎，尚未 commit）：FOC 搬進 ADC 中斷、電流環改成定點數、角度改用 I2C DMA，指令、擷取與 SWD 介面和後代相同，後代的電腦端工具可以直接使用。本文件描述改寫後的程式；改寫前的狀況與問題列在第 13 節。數字除了特別註明以外，都是 2026-10-14 在實機上量的。</p>
+  <p style="margin-top:8px">標記說明：
+    <span class="tag t-ok">已確認</span> 實機量測、由 code / ioc 直接讀出或作者已確認
+    <span class="tag t-todo">待確認</span> 資訊不足，或還沒有在實機上驗證
+    <span class="tag t-bad">問題</span> / <span class="tag t-warn">注意</span> 見第 13 節
+    <span class="tag t-dim">提案</span> 對齊計畫中的設計提案，尚未決定</p>
+</header>
+
+<!-- ============================================================ -->
+<h2 id="overview">1. 總覽與關鍵數字</h2>
+<p>這是一個在自製 PCB 上的三相 BLDC/PMSM 驅動，是後代的前一代產品。MCU 為 STM32F103C8T6（Cortex-M3，<strong>沒有 FPU</strong>），驅動 IC 與後代相同是 DRV8317H（3x PWM 模式），馬達與電源也和後代相同。和後代最大的差別是<strong>位置感測器</strong>：這一代用 <strong>AS5600</strong> 磁編碼器，經 <strong>I2C</strong> 讀 12-bit 角度（後代是 MT6835，ABZ + SPI）。這一代另外有 <strong>CAN Bus</strong> 指令介面。</p>
+<p>控制架構與後代相同：<strong>速度 PI → Iq PI → 反 Park → SVPWM</strong>，Id 環目標 0；位置模式是後代的串級（位置 P → 速度 PI），另外保留舊程式的 <strong>MIT</strong>（彈簧 + 阻尼直接算 Iq），以 <code>SET POSTYPE</code> 切換。FOC 在 TIM1 觸發的 ADC injected 轉換完成中斷內執行，<strong>電流環 20 kHz、以定點數計算</strong>；速度估測、速度環與位置環以浮點、每 4 次中斷算一輪（5 kHz）。文字指令（UART 與 SWD 信箱）、高速擷取的欄位格式、<code>swd_if</code> 結構都與後代相同。</p>
+
+<div class="kpis">
+  <div class="kpi"><div class="v">72 MHz</div><div class="l">SYSCLK（HSE 8 MHz × PLL 9）</div></div>
+  <div class="kpi"><div class="v">20 kHz</div><div class="l">PWM 與電流環（TIM1 中心對齊，ARR 1800）</div></div>
+  <div class="kpi"><div class="v">5 kHz</div><div class="l">速度環 / 位置環（每 4 次 FOC 中斷一輪）</div></div>
+  <div class="kpi"><div class="v">≤ 44 µs</div><div class="l">FOC 中斷最長執行時間（不在擷取時，含 I2C 中斷搶佔；週期 50 µs）</div></div>
+  <div class="kpi"><div class="v">≈ 9.7 k/s</div><div class="l">AS5600 讀取次數（I2C2 400 kHz，DMA）</div></div>
+  <div class="kpi"><div class="v">0 ~ 100 %</div><div class="l">PWM duty（2026-10-14 以前只用到 50 %）</div></div>
+  <div class="kpi"><div class="v">7</div><div class="l">馬達極對數（12 槽 14 極，與後代同一顆）</div></div>
+  <div class="kpi"><div class="v">65536</div><div class="l">count/rev（AS5600 12-bit × 16，與後代同單位）</div></div>
+  <div class="kpi"><div class="v">585 筆</div><div class="l">高速擷取緩衝區 8 KB（預設 14 byte/筆）</div></div>
+  <div class="kpi"><div class="v">88.8 %</div><div class="l">Flash 用量，58.2 / 64 KB（-Os）</div></div>
+  <div class="kpi"><div class="v">60.9 %</div><div class="l">RAM 用量，12.5 / 20 KB（含擷取緩衝區 8 KB）</div></div>
+  <div class="kpi"><div class="v">1 Mbit/s</div><div class="l">CAN Bus 位元率（處理方式沿用舊程式）</div></div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="hw">2. 硬體架構</h2>
+<p><span class="tag t-ok">已確認</span> 自製 PCB（.ioc 的 <code>board=custom</code>）。驅動 IC、馬達、Vbus 與後代相同（作者已確認）。</p>
+
+<figure>
+<svg viewBox="0 0 860 360" width="100%" style="min-width:640px" role="img" aria-label="硬體方塊圖">
+  <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ar"/></marker></defs>
+  <rect class="box hl" x="300" y="30" width="240" height="290" rx="10"/>
+  <text x="420" y="56" text-anchor="middle" class="md" font-weight="600">STM32F103C8T6</text>
+  <text x="420" y="74" text-anchor="middle" class="sm">LQFP48 · 72 MHz · 無 FPU · 64 KB / 20 KB</text>
+  <text x="316" y="106" class="sm">TIM1 CH1/2/3 (PWM) · CH4 → ADC 觸發</text>
+  <text x="316" y="128" class="sm">GPIO SLEEP / SLEW / GAIN / PWM_ACTIVE</text>
+  <text x="316" y="150" class="sm">ADC1 injected IN9 + IN8（CH1、CH2 電流）</text>
+  <text x="316" y="172" class="sm">GPIO nFAULT（讀值一直是 Low，未使用）</text>
+  <text x="316" y="206" class="sm">I2C2 400 kHz + DMA → AS5600</text>
+  <text x="316" y="228" class="sm">ADC IN3 Ang_ADC（未使用）</text>
+  <text x="316" y="258" class="sm">I2C1 100 kHz → M24C64</text>
+  <text x="316" y="280" class="sm">USART1 115200 · SWD</text>
+  <text x="316" y="302" class="sm">CAN 1 Mbit/s（PA11 / PA12）</text>
+  <rect class="box" x="30" y="80" width="190" height="100" rx="10"/>
+  <text x="125" y="110" text-anchor="middle" class="md" font-weight="600">DRV8317H</text>
+  <text x="125" y="130" text-anchor="middle" class="sm">三相半橋 · 3x PWM 模式</text>
+  <text x="125" y="148" text-anchor="middle" class="sm">內建電流感測 → ADC</text>
+  <text x="125" y="166" text-anchor="middle" class="sm">nFAULT → PA5</text>
+  <path class="ln" d="M300,106 H220" marker-end="url(#a)"/>
+  <path class="ln" d="M300,128 H220" marker-end="url(#a)"/>
+  <path class="ln" d="M220,150 H300" marker-end="url(#a)"/>
+  <path class="ln" d="M220,172 H300" stroke-dasharray="4 3" marker-end="url(#a)"/>
+  <rect class="box" x="30" y="240" width="190" height="60" rx="10"/>
+  <text x="125" y="266" text-anchor="middle" class="md" font-weight="600">BLDC / PMSM</text>
+  <text x="125" y="284" text-anchor="middle" class="sm">12N14P · 7 極對（同後代）</text>
+  <path class="ln" d="M125,180 V240" marker-end="url(#a)"/>
+  <text x="132" y="215" class="sm">U V W</text>
+  <rect class="box" x="620" y="180" width="210" height="70" rx="10"/>
+  <text x="725" y="206" text-anchor="middle" class="md" font-weight="600">AS5600</text>
+  <text x="725" y="224" text-anchor="middle" class="sm">12-bit 磁編碼器 · I2C 0x36</text>
+  <text x="725" y="240" text-anchor="middle" class="sm">OUT 腳 → PA3（未使用）</text>
+  <path class="ln" d="M620,206 H540" marker-end="url(#a)"/>
+  <path class="ln" d="M620,228 H540" stroke-dasharray="4 3" marker-end="url(#a)"/>
+  <rect class="box" x="620" y="262" width="210" height="44" rx="10"/>
+  <text x="725" y="282" text-anchor="middle" class="md" font-weight="600">M24C64</text>
+  <text x="725" y="298" text-anchor="middle" class="sm">8 KB EEPROM · I2C 0x50</text>
+  <path class="ln" d="M540,258 C580,258 580,284 620,284" marker-end="url(#a)"/>
+  <rect class="box" x="620" y="30" width="210" height="60" rx="10"/>
+  <text x="725" y="56" text-anchor="middle" class="md" font-weight="600">PC / 除錯器</text>
+  <text x="725" y="74" text-anchor="middle" class="sm">USB-UART · ST-Link SWD</text>
+  <path class="ln" d="M540,280 C590,280 590,70 620,70" marker-end="url(#a)"/>
+  <rect class="box" x="620" y="104" width="210" height="60" rx="10"/>
+  <text x="725" y="130" text-anchor="middle" class="md" font-weight="600">CAN 主機 / 其他節點</text>
+  <text x="725" y="148" text-anchor="middle" class="sm">收發器型號 待確認</text>
+  <path class="ln" d="M540,302 C600,302 600,134 620,134" marker-end="url(#a)"/>
+  <path class="ln" d="M220,280 C420,350 650,330 700,250" stroke-dasharray="3 3"/>
+  <text x="430" y="348" text-anchor="middle" class="sm">磁鐵裝在轉子軸上</text>
+  <text x="30" y="50" class="sm">Vbus 9 – 12.4 V（無 Vbus 量測腳）</text>
+</svg>
+<figcaption>圖 1 · 硬體方塊圖。虛線箭頭 = 有接線但程式沒有使用；虛線曲線 = 機械連結。</figcaption>
+</figure>
+
+<div class="tbl"><table>
+<tr><th>元件</th><th>型號</th><th>用途 / 設定</th><th>狀態</th></tr>
+<tr><td>MCU</td><td>STM32F103C8T6 (LQFP48)</td><td>Cortex-M3 72 MHz，64 KB Flash / 20 KB RAM，沒有 FPU。單精度四則運算以連結選項 <code>--wrap</code> 全部改用 <code>qfplib-m3</code>（約快 3 倍），電流環以定點數計算</td><td><span class="tag t-ok">已確認</span>（DBGMCU_IDCODE DEV_ID = <code>0x410</code>，64 KB）</td></tr>
+<tr><td>馬達驅動</td><td>DRV8317H</td><td>3x PWM：INHx 接 TIM1 CH1~3；INLx 共同接 <code>PWM_ACTIVE</code>(PB15)；nSLEEP = PB12；SLEW = High（code 註解 200 V/µs）；GAIN = Hi-Z（1 V/A，與實測的對齊電流相符）；nFAULT = PA5；死區由 DRV8317 內部處理（TIM1 DeadTime = 0）</td><td><span class="tag t-ok">型號已確認</span> <span class="tag t-todo">nFAULT 見問題 #19</span></td></tr>
+<tr><td>位置感測</td><td>ams AS5600</td><td>12-bit 磁編碼器。I2C2，7-bit 位址 <code>0x36</code>，讀 ANGLE（<code>0x0E</code>~<code>0x0F</code>）。開機讀到的暫存器：<code>STATUS = 0x67</code>（MD = 1 偵測到磁鐵，ML / MH = 0）、<code>AGC = 128</code>、<code>CONF = 0x0000</code>（遲滯關、慢速濾波 16x、快速濾波關）、<code>ZPOS = MPOS = 0</code>（沒有燒錄過範圍，ANGLE = RAW ANGLE）。程式不寫入任何設定。OUT 腳接 PA3，沒有使用。<strong>讀值增加的方向和磁場 CH1→CH2→CH3 的旋轉方向相反</strong>（問題 #18）</td><td><span class="tag t-ok">已確認</span></td></tr>
+<tr><td>馬達</td><td>—</td><td>12 槽 14 極（7 極對），與後代同一顆。後代 2026-10-12 實測：相電阻約 3.7 Ω、電感約 0.9 mH（d 軸，以 10 V 基準計）。這一代對齊時（duty 偏差 0.2）CH1 電流 0.286 A</td><td><span class="tag t-ok">已確認同後代</span></td></tr>
+<tr><td>電源</td><td>—</td><td>Vbus 9 ~ 12.4 V；板上沒有 Vbus 的 ADC 量測</td><td><span class="tag t-ok">已確認同後代</span></td></tr>
+<tr><td>EEPROM</td><td>M24C64（ST）</td><td>64 Kbit（8 KB），接 I2C1（PB8/PB9 remap），7-bit 位址 <code>0x50</code>（<code>I2C_SCAN</code> 找得到）；WC 腳接 <code>EEPROM_RW#</code>(PA15)，保持 Low。這一版的韌體開機不讀、也不寫，見第 11 節</td><td><span class="tag t-ok">已焊上</span></td></tr>
+<tr><td>CAN 收發器</td><td>—</td><td>CAN_RX = PA11、CAN_TX = PA12</td><td><span class="tag t-todo">收發器型號與終端電阻待確認</span></td></tr>
+</table></div>
+
+<!-- ============================================================ -->
+<h2 id="clock">3. 時鐘樹</h2>
+<div class="tbl"><table>
+<tr><th>節點</th><th class="num">頻率</th><th>設定</th><th>使用者</th></tr>
+<tr><td>HSE</td><td class="num">8 MHz</td><td>外部振盪器（PD0/PD1），<code>HSEPredivValue</code> = 1</td><td>PLL 來源</td></tr>
+<tr><td>SYSCLK / HCLK</td><td class="num">72 MHz</td><td>PLL × 9，Flash latency 2，prefetch 開</td><td>CPU、DMA、DWT 週期計數器</td></tr>
+<tr><td>APB1 (PCLK1)</td><td class="num">36 MHz</td><td>/2</td><td>CAN、I2C1、I2C2</td></tr>
+<tr><td>APB1 Timer</td><td class="num">72 MHz</td><td>APB1 分頻 ≠ 1 → ×2</td><td>TIM2</td></tr>
+<tr><td>APB2 (PCLK2)</td><td class="num">72 MHz</td><td>/1</td><td>USART1、GPIO、AFIO</td></tr>
+<tr><td>APB2 Timer</td><td class="num">72 MHz</td><td>×1</td><td>TIM1</td></tr>
+<tr><td>ADCCLK</td><td class="num">12 MHz</td><td>PCLK2 / 6（上限 14 MHz）</td><td>ADC1</td></tr>
+</table></div>
+<p class="note">.ioc 的 <code>RCC.USBFreq_Value</code> 是 72 MHz（USB 需要 48 MHz），但沒有使用 USB，沒有影響。之後要用 USB 時 PLL 需要重新規劃（例如 72 MHz ÷ 1.5 = 48 MHz）。</p>
+
+<!-- ============================================================ -->
+<h2 id="pins">4. 腳位配置</h2>
+<p>來源：<code>STM32_FOC.ioc</code>、<code>Core/Inc/main.h</code>、<code>stm32f1xx_hal_msp.c</code>。<span class="tag t-ok">已確認</span></p>
+<div class="note">2026-10-14 三相標籤改成和後代相同：<strong>TIM1 CH1 = U、CH2 = V、CH3 = W</strong>（舊標籤是 CH1 = V、CH2 = U）。只改 .ioc 標籤，接線不動；對應的電流腳也跟著改名（PB1 = <code>Current_U</code>、PB0 = <code>Current_V</code>）。對齊時量到 CH1 = +0.286 A、CH2 = −0.142 A、CH3 = −0.144 A，確認 PB1 是 CH1 那一相、極性為正。</div>
+<div class="tbl"><table>
+<tr><th>Pin</th><th>標籤</th><th>功能 / AF</th><th>模式</th><th>說明</th></tr>
+<tr><td><code>PA8</code></td><td>PWM_U_H</td><td>TIM1_CH1</td><td>AF PP, High speed</td><td>CH1 (U) PWM → DRV8317 INH</td></tr>
+<tr><td><code>PA9</code></td><td>PWM_V_H</td><td>TIM1_CH2</td><td>AF PP, High speed</td><td>CH2 (V) PWM</td></tr>
+<tr><td><code>PA10</code></td><td>PWM_W_H</td><td>TIM1_CH3</td><td>AF PP, High speed</td><td>CH3 (W) PWM</td></tr>
+<tr><td><code>PB15</code></td><td>PWM_ACTIVE</td><td>GPIO Out</td><td>PP，初值 Low</td><td>DRV8317 INLA/B/C 共同使能（3x PWM）。Low = 三相高阻（STOP、開機量偏置時）</td></tr>
+<tr><td><code>PB12</code></td><td>SLEEP</td><td>GPIO Out</td><td>PP，初值 Low</td><td>DRV8317 nSLEEP。開機時 Low 10 ms → High</td></tr>
+<tr><td><code>PB13</code></td><td>SLEW</td><td>GPIO Out</td><td>PP，程式設 High</td><td>DRV8317 SLEW（註解：200 V/µs）</td></tr>
+<tr><td><code>PB14</code></td><td>GAIN</td><td>GPIO → Analog</td><td>先初始化為輸出 Low，再於 main 改成 Analog（Hi-Z）</td><td>DRV8317 GAIN（Hi-Z = 1 V/A）</td></tr>
+<tr><td><code>PA5</code></td><td>nFAULT</td><td>GPIO In</td><td>No pull</td><td>DRV8317 nFAULT。實測運轉正常時也一直是 Low（問題 #19），程式不使用</td></tr>
+<tr><td><code>PB1</code></td><td>Current_U</td><td>ADC1_IN9</td><td>Analog</td><td>CH1 電流，injected rank 1 → <code>JDR1</code></td></tr>
+<tr><td><code>PB0</code></td><td>Current_V</td><td>ADC1_IN8</td><td>Analog</td><td>CH2 電流，injected rank 2 → <code>JDR2</code></td></tr>
+<tr><td><code>PA7</code></td><td>Current_W</td><td>ADC1_IN7</td><td>Analog</td><td>CH3 電流。不在轉換序列，CH3 由 KCL 推算（同後代）</td></tr>
+<tr><td><code>PA3</code></td><td>Ang_ADC</td><td>ADC1_IN3</td><td>Analog</td><td>AS5600 OUT 腳。不使用</td></tr>
+<tr><td><code>PB10</code> / <code>PB11</code></td><td>—</td><td>I2C2_SCL / SDA</td><td>AF OD</td><td>AS5600，400 kHz。匯流排卡住時程式會暫時改成 GPIO 送 SCL 脈衝（<code>AS5600_Recover()</code>）</td></tr>
+<tr><td><code>PB8</code> / <code>PB9</code></td><td>—</td><td>I2C1_SCL / SDA（remap）</td><td>AF OD</td><td>M24C64，100 kHz</td></tr>
+<tr><td><code>PA15</code></td><td>EEPROM_RW#</td><td>GPIO Out</td><td>PP，初值 Low</td><td>M24C64 WC（Low = 允許寫入）</td></tr>
+<tr><td><code>PB6</code> / <code>PB7</code></td><td>—</td><td>USART1_TX / RX（remap）</td><td>TX AF PP、RX Input</td><td>115200 8N1</td></tr>
+<tr><td><code>PA11</code> / <code>PA12</code></td><td>—</td><td>CAN_RX / CAN_TX</td><td>RX Input、TX AF PP</td><td>CAN Bus。PA11 也是 TIM1_CH4 的腳，但設成輸入，CH4 的輸出不會出現在腳上</td></tr>
+<tr><td><code>PB3</code></td><td>LED_Status</td><td>GPIO Out</td><td>PP Low</td><td>狀態 LED（程式未使用）。<code>__HAL_AFIO_REMAP_SWJ_NOJTAG()</code> 關掉 JTAG，PB3 才能當 GPIO</td></tr>
+<tr><td><code>PA13</code> / <code>PA14</code></td><td>SWDIO / SWCLK</td><td>SWD</td><td></td><td>除錯、SWD 指令信箱（沒有 SWO）</td></tr>
+<tr><td><code>PD0</code> / <code>PD1</code></td><td>—</td><td>HSE OSC</td><td></td><td>8 MHz</td></tr>
+</table></div>
+
+<!-- ============================================================ -->
+<h2 id="periph">5. 周邊 / Bus 設定</h2>
+<div class="tbl"><table>
+<tr><th>周邊</th><th>Bus</th><th>關鍵設定</th><th>結果</th><th>用途</th></tr>
+<tr><td><strong>TIM1</strong></td><td>APB2 (72 MHz)</td><td>PSC = 0，ARR = 1800，Center-aligned mode 1，ARR preload；CH1~3 PWM1、極性 High、DeadTime 0；<strong>CH4 = PWM2（無輸出腳），CCR4 = 1695；TRGO = OC4REF</strong></td><td>PWM 20 kHz（50 µs）。往上數到 1695 時 OC4REF 由 Low 變 High，經 TRGO 觸發 ADC，兩個通道的取樣落在計數頂點（下橋導通的中點）前後</td><td>三相 PWM；ADC 觸發</td></tr>
+<tr><td><strong>ADC1</strong></td><td>APB2</td><td>12-bit，Scan；regular 不使用；<strong>injected 2 通道</strong>：rank 1 = IN9（CH1）、rank 2 = IN8（CH2），各 7.5 cycles 取樣；外部觸發 <code>T1_TRGO</code>；開機先做校正</td><td>每通道 (7.5+12.5)/12 MHz ≈ 1.67 µs，兩相相差 1.67 µs</td><td>電流。JEOC 中斷內執行 FOC（第 8 節）</td></tr>
+<tr><td><strong>DMA1 Ch4</strong></td><td>AHB</td><td>USART1 TX，Normal，Low</td><td></td><td><code>printf</code> 數據行</td></tr>
+<tr><td><strong>DMA1 Ch5</strong></td><td>AHB</td><td>I2C2 RX，Byte，Normal，High（原本是 USART1 RX，F103 上兩者共用 Ch5）</td><td></td><td>AS5600 角度</td></tr>
+<tr><td><strong>TIM2</strong></td><td>APB1 Timer (72 MHz)</td><td>PSC = 71，ARR = 65535，Up；<strong>更新中斷開啟（優先權 0）</strong></td><td>1 MHz → 1 µs/tick；溢位次數組成 64-bit 的 <code>micros()</code></td><td><code>micros()</code>、擷取的 <code>t_us</code></td></tr>
+<tr><td><strong>I2C2</strong></td><td>APB1</td><td><strong>400 kHz</strong>（Fast mode，duty 2），7-bit；EV / ER 中斷開啟；RX DMA</td><td>一次讀 2 byte 約 75 µs；實測約 9700 筆/秒</td><td>AS5600：開機以阻塞方式讀設定與 ANGLE（同時把位址指標指到 0x0E），之後每次 ADC 中斷在 I2C 空閒時以 <code>HAL_I2C_Master_Receive_DMA</code> 讀 2 byte（不必重寫位址）</td></tr>
+<tr><td><strong>I2C1</strong></td><td>APB1</td><td>100 kHz，7-bit，阻塞式，逾時 10 ms</td><td>約 90 µs/byte</td><td>M24C64、<code>I2C_SCAN</code></td></tr>
+<tr><td><strong>USART1</strong></td><td>APB2</td><td>115200 8N1；TX DMA；<strong>RX 改用中斷</strong>，每次收 1 byte（同後代）</td><td>約 11.5 kB/s</td><td>文字指令與回應、5 ms 數據行、<code>LOG</code> 二進位資料</td></tr>
+<tr><td><strong>CAN</strong></td><td>APB1 (36 MHz)</td><td>沒有更動：Prescaler 6，BS1 = 3 tq，BS2 = 2 tq，SJW 1；Normal mode；AutoRetransmission / AutoBusOff / AutoWakeUp 皆關閉；Filter 全收 → FIFO0；RX FIFO0 中斷</td><td>1 Mbit/s，取樣點 66.7 %</td><td>第 10 節</td></tr>
+</table></div>
+
+<h3>電流換算（定點數）</h3>
+<p>電流 1 單位 = ADC 1 LSB ÷ 16 ≈ <strong>50.35 µA</strong>（<code>3.3/4096/16</code>，GAIN Hi-Z = 1 V/A），範圍約 ±1.65 A：<code>i = adc × 16 − bias × 16</code>。偏置是開機時三相高阻、比較值 0 的狀態下 256 筆的平均（每筆間隔 1 ms，同後代），實測約 2047.6 / 2044.4 LSB。CH3 = −CH1 − CH2。電壓 1 單位 = 比較值 ÷ 16；後代的「電壓命令 1」（10 V 基準）= 1800 × 0.1 × 16 = 2880 單位。所有 <code>SET</code> / <code>GET</code> 的參數仍是安培、伏特等浮點單位，換算由主迴圈的 <code>Ctrl_Sync()</code> 做（第 6 節）。</p>
+
+<!-- ============================================================ -->
+<h2 id="foc">6. FOC 控制架構</h2>
+<figure>
+<svg viewBox="0 0 900 300" width="100%" style="min-width:720px" role="img" aria-label="FOC 控制方塊圖">
+  <defs><marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="ar"/></marker></defs>
+  <text x="6" y="26" class="sm">浮點 · 5 kHz（時槽 0 ~ 3）</text>
+  <rect class="box off" x="2" y="32" width="318" height="120" rx="8"/>
+  <text x="14" y="62" class="sm">SPEED / 位置環</text>
+  <path class="ln" d="M86,58 H108" marker-end="url(#b)"/>
+  <circle cx="118" cy="58" r="10" class="box"/><text x="118" y="62" text-anchor="middle" class="sm">Σ</text>
+  <path class="ln" d="M128,58 H150" marker-end="url(#b)"/>
+  <rect class="box hl" x="150" y="38" width="100" height="44" rx="8"/>
+  <text x="200" y="58" text-anchor="middle" class="md">速度 PI</text>
+  <text x="200" y="74" text-anchor="middle" class="sm">目標權重 · 抗飽和</text>
+  <path class="ln" d="M250,58 H320" marker-end="url(#b)"/>
+  <rect class="box" x="150" y="96" width="100" height="40" rx="8"/>
+  <text x="200" y="114" text-anchor="middle" class="sm">MIT（POSTYPE 1）</text>
+  <text x="200" y="128" text-anchor="middle" class="sm">KP·誤差 − KD·ω</text>
+  <path class="ln" d="M250,116 H285 V64" marker-end="url(#b)"/>
+  <text x="262" y="50" class="sm">Iq*</text>
+  <text x="330" y="26" class="sm">定點 · 20 kHz（每次中斷）</text>
+  <circle cx="345" cy="58" r="10" class="box"/><text x="345" y="62" text-anchor="middle" class="sm">Σ</text>
+  <path class="ln" d="M355,58 H380" marker-end="url(#b)"/>
+  <rect class="box hl" x="380" y="36" width="100" height="44" rx="8"/>
+  <text x="430" y="56" text-anchor="middle" class="md">Iq PI</text>
+  <text x="430" y="72" text-anchor="middle" class="sm">PiFix · ±LIMIT</text>
+  <rect class="box hl" x="380" y="88" width="100" height="30" rx="8"/>
+  <text x="430" y="108" text-anchor="middle" class="sm">Id PI（目標 0）</text>
+  <path class="ln" d="M480,58 H530" marker-end="url(#b)"/>
+  <path class="ln" d="M480,103 H505 V68 H530" marker-end="url(#b)"/>
+  <rect class="box hl" x="530" y="36" width="100" height="44" rx="8"/>
+  <text x="580" y="56" text-anchor="middle" class="md">反 Park</text>
+  <text x="580" y="72" text-anchor="middle" class="sm">sin/cos 查表</text>
+  <path class="ln" d="M630,58 H660" marker-end="url(#b)"/>
+  <rect class="box hl" x="660" y="36" width="110" height="44" rx="8"/>
+  <text x="715" y="56" text-anchor="middle" class="md">SVPWM</text>
+  <text x="715" y="72" text-anchor="middle" class="sm">整數 · 0 ~ ARR</text>
+  <path class="ln" d="M770,58 H800" marker-end="url(#b)"/>
+  <rect class="box" x="800" y="36" width="90" height="44" rx="8"/>
+  <text x="845" y="56" text-anchor="middle" class="md">TIM1</text>
+  <text x="845" y="72" text-anchor="middle" class="sm">CH4 → ADC</text>
+  <rect class="box" x="690" y="200" width="120" height="48" rx="8"/>
+  <text x="750" y="220" text-anchor="middle" class="md">ADC injected</text>
+  <text x="750" y="238" text-anchor="middle" class="sm">CH1、CH2</text>
+  <path class="ln" d="M845,80 V224 H810" marker-end="url(#b)"/>
+  <rect class="box hl" x="540" y="200" width="110" height="48" rx="8"/>
+  <text x="595" y="222" text-anchor="middle" class="md">Clarke</text>
+  <text x="595" y="238" text-anchor="middle" class="sm">Iα, Iβ</text>
+  <path class="ln" d="M690,224 H650" marker-end="url(#b)"/>
+  <rect class="box hl" x="390" y="200" width="110" height="48" rx="8"/>
+  <text x="445" y="222" text-anchor="middle" class="md">Park</text>
+  <text x="445" y="238" text-anchor="middle" class="sm">Id, Iq</text>
+  <path class="ln" d="M540,224 H500" marker-end="url(#b)"/>
+  <path class="ln" d="M390,224 H345 V68" marker-end="url(#b)"/>
+  <text x="350" y="190" class="sm">Iq (−)</text>
+  <rect class="box" x="120" y="200" width="190" height="48" rx="8"/>
+  <text x="215" y="220" text-anchor="middle" class="md">AS5600（I2C DMA）</text>
+  <text x="215" y="238" text-anchor="middle" class="sm">count = (零點 − 讀值) × 16</text>
+  <path class="ln" d="M215,200 V168 H118 V68" marker-end="url(#b)"/>
+  <text x="124" y="162" class="sm">ω (−) · Δcount/Δt → LPF 0.5 ms</text>
+  <path class="ln acc" d="M310,260 H445 V248" marker-end="url(#b)"/>
+  <path class="ln acc" d="M310,270 H580 V80" marker-end="url(#b)"/>
+  <text x="330" y="290" class="sm">θe = 7 × (count + ω × 讀取後經過的時間)（藍線：給 Park / 反 Park）</text>
+</svg>
+<figcaption>圖 2 · 控制結構。右半部（電流環）每次 FOC 中斷都以定點數計算；左半部（速度估測、速度環、位置環 / MIT）以浮點分散在四次中斷內算完一輪。位置模式的串級做法是位置 P 的輸出取代 SPEED 當速度環的目標。</figcaption>
+</figure>
+
+<h3>控制模式與輸出狀態</h3>
+<div class="tbl"><table>
+<tr><th>指令</th><th>行為</th></tr>
+<tr><td><code>SET MODE 0</code>（速度）</td><td>速度 PI → Iq 命令。目標 <code>SET SPEED</code>（圈/秒），經目標權重 <code>VELB</code> 的前置濾波（同後代）。開機預設 0.1 圈/秒</td></tr>
+<tr><td><code>SET MODE 1</code>，<code>POSTYPE 0</code>（串級，預設）</td><td>同後代：位置 P（度 → 圈/秒，限幅 <code>POS.LIMIT</code>）→ 速度 PI → Iq PI。位置環每 <code>POSDIV</code> 次 FOC 中斷算一次（以 4 為單位進位）。沒有後代的軌跡規劃（<code>PLAN.*</code>），等同後代 <code>PLAN.MODE 0</code>（只限速）</td></tr>
+<tr><td><code>SET MODE 1</code>，<code>POSTYPE 1</code>（MIT）</td><td>舊程式的做法：<code>Iq* = MIT.KP × 誤差(度) − MIT.KD × 速度(圈/秒)</code>，限幅 <code>VEL.LIMIT</code>，不經過速度環。誤差以多圈位置相減，沒有舊程式的折回錯誤（問題 #6）</td></tr>
+<tr><td><code>SET ANGLE</code> / <code>SET MOVE</code></td><td>絕對 / 相對的位置目標（度，多圈）。速度模式下收到時自動切到位置模式</td></tr>
+<tr><td><code>STOP</code> / <code>BRAKE</code> / <code>RUN</code></td><td>同後代：滑行（三相高阻）/ 煞車（下橋全開）/ 恢復輸出（速度目標歸 0、位置目標設為目前位置）。停止期間中斷繼續量測角度、速度與電流</td></tr>
+<tr><td>角度逾時</td><td>5 ms 沒有新的 AS5600 讀值時，中斷自己關閉輸出（滑行），回 <code>[ANG] ERR TIMEOUT</code>、<code>[OUT] COAST</code>，要 <code>RUN</code> 才恢復。主迴圈發現 20 ms 沒有新讀值時重新初始化 I2C2（回 <code>[ANG] I2C RESET</code>）</td></tr>
+</table></div>
+<p>後代的 <code>MODE 2</code>（棘輪）、<code>MODE 3</code>（限位）、<code>MODE 4</code>（無摩擦）這一代還沒有，回 <code>[PARAM] ERR PARAM</code>（第 14.4 節階段 5）。</p>
+
+<h3>每次 FOC 中斷的計算（<code>main.c</code> <code>Foc_AdcIsr()</code> / <code>Foc_Step()</code>）</h3>
+<ol>
+  <li>讀 <code>ADC1-&gt;JDR1</code>、<code>JDR2</code>（CH1、CH2）；I2C2 空閒時啟動下一筆 AS5600 的 DMA 讀取（<code>AS5600_Kick()</code>）。</li>
+  <li><strong>角度</strong>：AS5600 有新的一筆時，<code>count = ((zero_raw − raw) &amp; 4095) × 16</code>（方向見問題 #18），相鄰兩筆的差以 int16 累加到多圈位置 <code>pos_count</code>，也累加到速度估測用的 Δcount、Δt。</li>
+  <li><strong>電角度</strong>：讀值從讀完到現在經過的時間以目前速度外插（最多 1 ms），<code>θe = 7 × count</code> 取 16 bit，sin / cos 以 256 格的 Q15 表加線性內插（<code>sin_lut.c</code>）。</li>
+  <li><strong>時槽</strong>（每 4 次中斷一輪，浮點）：0 = 速度估測（Δcount ÷ Δt，再過一階低通 <code>VELTF</code>）；1 = 速度目標與目標權重；2 = 速度 PI 或 MIT，更新 Iq 命令；3 = 串級的位置 P。</li>
+  <li><strong>電流</strong>（定點）：<code>i = adc × 16 − bias</code>；可選的相電流低通（<code>IPHLPF</code>）；Clarke <code>Iα = CH1</code>、<code>Iβ = (2·CH2 + CH1)/√3</code>；Park；可選的 dq 低通（<code>IDQLPF</code>）。</li>
+  <li><strong>電流 PI</strong>（<code>PiFix</code>，Q16 增益、int64 積分，算法同 <code>PIDController_run()</code> 的 P + I）：<code>vq = PI(Iq* − Iq)</code>、<code>vd = PI(0 − Id)</code>（<code>IDLOOP 0</code> 時 vd = 0）。</li>
+  <li>反 Park，<code>Svpwm_Counts()</code>：三相、min-max 零序注入置中、限幅在 0 ~ ARR，都是整數。算式與後代的 <code>Svpwm()</code> 相同（duty = (U + 5 − (Umax+Umin)/2) × 0.1），duty 用到完整的 0 ~ 100 %。</li>
+  <li>高速擷取（<code>Log_Sample()</code>），以整數累加，存一筆時才換算成後代的欄位比例。</li>
+</ol>
+<p>PI 增益、電流偏置、低通與目標權重的係數，由主迴圈每一輪呼叫的 <code>Ctrl_Sync()</code> 從浮點參數換算（中斷內不做除法），所以 <code>SET</code> 最慢 5 ms 後生效。</p>
+
+<h3>開環定向 <code>SetAng()</code> 與 <code>ALIGN</code></h3>
+<p>同後代：六扇區開環電壓向量，強度 <code>fullTime = 0.2</code>（duty 偏差），比較值以 ARR 為滿刻度。<code>ALIGN</code>（開機時、或指令）：<code>SetAng(0)</code> 後等 500 ms，平均 32 筆 AS5600 讀值當零點 <code>zero_raw</code>，FOC 中斷下一次從單圈角度重新起算多圈位置、位置目標設為目前位置。轉速高於 1 圈/秒 時不接受（<code>[ALIGN] ERR SPEED</code>）。</p>
+
+<!-- ============================================================ -->
+<h2 id="params">7. 控制參數一覽</h2>
+<div class="tbl"><table>
+<tr><th>控制器</th><th class="num">P</th><th class="num">I</th><th class="num">D</th><th class="num">Ramp</th><th class="num">Limit</th><th>輸入 → 輸出單位</th><th>依據</th></tr>
+<tr><td><code>IQ</code>（<code>PID__current_Iq</code>）</td><td class="num">2.8</td><td class="num">11600</td><td class="num">—</td><td class="num">—</td><td class="num">5.0</td><td>A → 電壓命令（10 V 基準，同後代）</td><td>後代實測的 R、L，<code>P = L·ωc</code>、<code>I = R·ωc</code>，ωc 取 2π × 500 Hz（後代 1 kHz）。實測 1 圈/秒 時 Iq 對命令的誤差 1.7 mA rms。這一代的電流環不使用 D 與 RAMP</td></tr>
+<tr><td><code>ID</code>（<code>PID__current_Id</code>）</td><td class="num">2.8</td><td class="num">11600</td><td class="num">—</td><td class="num">—</td><td class="num">5.0</td><td>A → 電壓命令</td><td>目標固定 0</td></tr>
+<tr><td><code>VEL</code>（<code>PID__velocity</code>）</td><td class="num">0.2</td><td class="num">25</td><td class="num">0</td><td class="num">0</td><td class="num">1.0</td><td>圈/秒 → Iq 命令 (A)</td><td>2026-10-14 實測（<code>VELTF</code> 0.5 ms、<code>VELB</code> 0.7）：0.1 圈/秒 時位置對等速直線的偏差 0.10 度 rms（約 1 個 AS5600 LSB）；1 → 5 圈/秒 步階過衝 46 %、90 ms 進入 ±5 %；20 圈/秒 穩定。代價是 1 ~ 5 圈/秒 時 Iq 命令有約 ±200 mA 的雜訊。原本的 0.1 / 4 低速一卡一卡（見問題 #23）</td></tr>
+<tr><td><code>POS</code>（<code>PID__position</code>）</td><td class="num">0.15</td><td class="num">0</td><td class="num">0</td><td class="num">0</td><td class="num">10</td><td>度 → 圈/秒</td><td>後代 0.2。配上面的速度環時 0.2 會在目標附近 ±1 度來回晃停不下來；0.15 時 90 度的 <code>MOVE</code> 約 95 ms 進入 ±1 度、165 ms 進入 ±0.1 度，過衝 0.088 度（1 LSB）</td></tr>
+<tr><td>MIT（<code>MIT.KP</code> / <code>MIT.KD</code>）</td><td class="num">0.01</td><td class="num">—</td><td class="num">0.15</td><td class="num">—</td><td class="num">VEL.LIMIT</td><td>KP：A/度；KD：A/(圈/秒)</td><td>舊程式的值。90 度的 <code>MOVE</code> 約 280 ms 進入 ±2 度，沒有積分，停在 1 ~ 2 度的誤差</td></tr>
+</table></div>
+<div class="tbl"><table>
+<tr><th>參數</th><th class="num">預設</th><th>說明</th></tr>
+<tr><td><code>VELTF</code></td><td class="num">0.5 ms</td><td>速度回授低通（0 ~ 50 ms）。後代 0.4 ms。速度環 I = 25 時延遲是穩定度的瓶頸：1.5 ms 配 P 0.2 會在 24 Hz 振盪，3 ms 配 P 0.1 會在 8.6 Hz 振盪（舊程式用 8 ms）</td></tr>
+<tr><td><code>VELB</code> / <code>VELAW</code></td><td class="num">0.7 / 1</td><td>同後代：目標權重、速度環積分抗飽和</td></tr>
+<tr><td><code>IPHLPF</code> / <code>IPHTF</code>、<code>IDQLPF</code> / <code>IDQTF</code></td><td class="num">0 / 0.05 ms</td><td>同後代：相電流、dq 電流低通，預設關閉</td></tr>
+<tr><td><code>IDLOOP</code></td><td class="num">1</td><td>同後代</td></tr>
+<tr><td><code>POSDIV</code></td><td class="num">8</td><td>位置環每幾次 FOC 中斷算一次（1 ~ 1000，以 4 為單位進位）；8 = 2.5 kHz。後代預設 10（40 kHz 下 4 kHz）</td></tr>
+<tr><td><code>SPEED</code></td><td class="num">0.1</td><td>開機的速度目標（圈/秒），同後代</td></tr>
+</table></div>
+<p>參數都只存在 RAM，重新開機回到上表的預設值（EEPROM 參數區塊是階段 4）。</p>
+
+<!-- ============================================================ -->
+<h2 id="timing">8. 中斷與時序</h2>
+<div class="tbl"><table>
+<tr><th>IRQ</th><th class="num">優先權</th><th>處理內容</th><th>頻率</th></tr>
+<tr><td>TIM2</td><td class="num">0</td><td>溢位 → <code>overflow_handler()</code>（<code>micros()</code> 的高位）</td><td>15 Hz</td></tr>
+<tr><td>I2C2_EV / I2C2_ER、DMA1_Channel5</td><td class="num">1</td><td>AS5600 讀取的 HAL 狀態機；讀完時記下讀值與時間（<code>AS5600_RxDone()</code>）</td><td>約 9.7 kHz</td></tr>
+<tr><td>ADC1_2</td><td class="num">2</td><td>JEOC → <code>Foc_AdcIsr()</code>（在 <code>stm32f1xx_it.c</code> 的 USER CODE 內直接處理，不經過 <code>HAL_ADC_IRQHandler</code>，見問題 #20）</td><td>20 kHz</td></tr>
+<tr><td>USART1、DMA1_Channel4</td><td class="num">3</td><td>指令接收（每 byte 一次中斷）、<code>printf</code> DMA 傳送</td><td>—</td></tr>
+<tr><td>USB_LP_CAN1_RX0</td><td class="num">0</td><td>CAN 收到訊息（優先權沒有更動）</td><td>收到時</td></tr>
+<tr><td>SysTick</td><td class="num">15</td><td>HAL tick 1 ms</td><td>1 kHz</td></tr>
+</table></div>
+<p>NVIC Priority Group 4（4 bit 搶佔）。TIM1 的中斷全部關閉（不再需要）。</p>
+<h3>FOC 中斷的執行時間 <span class="tag t-ok">已確認</span></h3>
+<p>以 DWT 週期計數器量（<code>foc_isr_cyc</code> / <code>foc_isr_cyc_max</code>，經 SWD 讀），包含期間被 I2C 中斷搶佔的時間。PWM 週期是 50 µs（3600 個週期）。每次 3 秒內的最長值：</p>
+<div class="tbl"><table>
+<tr><th>狀況</th><th class="num">最長</th></tr>
+<tr><td>速度模式 0.1 圈/秒</td><td class="num">3100 週期（43.1 µs）</td></tr>
+<tr><td>速度模式 10 圈/秒</td><td class="num">3139 週期（43.6 µs）</td></tr>
+<tr><td>位置模式（串級）</td><td class="num">3176 週期（44.1 µs）</td></tr>
+<tr><td>串流 <code>LOGS 1</code>，預設 7 欄</td><td class="num">3723 週期（51.7 µs）</td></tr>
+<tr><td>串流 <code>LOGS 1</code>，全部 21 欄</td><td class="num">4366 週期（60.6 µs）</td></tr>
+</table></div>
+<p>沒有時槽計算的中斷約 1000 ~ 1500 個週期（14 ~ 21 µs）。<strong>擷取 div = 1 時偶爾會超過一個 PWM 週期</strong>：下一次 ADC 中斷延後執行，那一次的比較值晚半個 PWM 週期才更新，不會漏掉 ADC 讀值。<code>LOG</code> 標頭的 <code>isr_max_us</code> 是擷取期間的最長值。</p>
+<div class="note">這一代第一次照後代的浮點寫法移植時，FOC 中斷要 14936 個週期（207 µs），中斷一個接一個執行、主迴圈與 SysTick 完全跑不到。改用 qfplib 後是 9100 個週期，sin/cos 查表與整數 SVPWM 後仍要 9100（浮點運算一次 50 ~ 100 個週期），最後把電流環改成定點數、外環分散到四個時槽，才放進 50 µs（作者 2026-10-14 決定）。</div>
+<p><strong>主迴圈</strong>：<code>Cmd_Process()</code>（UART、SWD 信箱、<code>swd_cmd</code>）→ <code>Log_Process()</code> → <code>Swd_Update()</code> → <code>Fault_Process()</code> → <code>Ctrl_Sync()</code> → 數據行 → <code>HAL_Delay(5)</code>。數據行與後代相同是 10 欄：角度、ADC CH1、ADC CH2、三相電流、速度、Iq、位置目標、多圈位置；一行約 70 字元要 6 ms，前一行還沒送完時這一行丟掉。</p>
+
+<!-- ============================================================ -->
+<h2 id="boot">9. 啟動流程</h2>
+<ol>
+  <li><code>HAL_Init</code> → <code>SystemClock_Config</code>（72 MHz）→ GPIO、DMA、ADC1、CAN、I2C2、USART1、TIM1、TIM2、I2C1 初始化。</li>
+  <li><code>Swd_Init()</code>；由 TIM1 設定算出 PWM 頻率（20 kHz）與 FOC 頻率；啟動 TIM2（<code>micros()</code>）與 DWT 週期計數器；初始化 PID 預設值。</li>
+  <li><strong>AS5600</strong>：清除 I2C2 匯流排（GPIO 送 SCL 脈衝與 STOP，再重新初始化 I2C2），讀一次 ANGLE；讀出並回報 <code>[AS5600] STATUS=… AGC=… CONF=… ZPOS=… MPOS=…</code>。</li>
+  <li>ADC 校正，啟動 injected 轉換與 JEOC 中斷；TIM1 比較值設 0，啟動 CH1~4。從這裡開始每個 PWM 週期都會進 FOC 中斷（<code>FocDo = 0</code> 時只讀 ADC 與啟動 AS5600 讀取）。</li>
+  <li>DRV8317 設定：GAIN → Hi-Z、SLEW = High、PWM_ACTIVE = Low、nSLEEP Low → 10 ms → High，等 250 ms（同後代）。</li>
+  <li><strong>電流偏置</strong>：256 筆平均，每筆間隔 1 ms；<code>Ctrl_Sync()</code>。</li>
+  <li>PWM_ACTIVE = High；<strong>ALIGN</strong>（約 0.55 秒），回 <code>[ZERO] ALIGN</code>（讀不到角度時是 <code>[ZERO] ERR ANG</code>）。</li>
+  <li>CAN filter、啟動 CAN、RX FIFO0 中斷，印 <code>HAL_CAN1_Star1 is HAL_OK</code>（沿用舊程式）。</li>
+  <li><code>FocDo = 1</code>，以 0.1 圈/秒 開始轉；啟動 USART1 RX 中斷，進入主迴圈。</li>
+</ol>
+<p>從上電到閉環約 1.1 秒（同後代）。舊程式開機時讀 EEPROM 的 <code>angShift</code> 與 <code>exf_map</code>，這一版都不讀（第 11 節）。</p>
+
+<!-- ============================================================ -->
+<h2 id="can">10. CAN Bus 指令</h2>
+<p><span class="tag t-ok">已確認</span> 這一輪依作者的決定<strong>沒有更動 CAN</strong>（設定、filter、<code>HAL_CAN_RxFifo0MsgPendingCallback()</code> 的處理都照舊），只把變數名稱換成新程式的。行為：</p>
+<div class="tbl"><table>
+<tr><th class="num">byte0</th><th>名稱</th><th>byte1</th><th>行為</th><th>狀態</th></tr>
+<tr><td class="num">0</td><td><code>STOP_MOTOR</code></td><td>不看</td><td><code>deviceMode = Stop</code>，<code>deviceMode</code> 沒有其他地方使用，沒有效果（同舊程式）</td><td><span class="tag t-bad">無效</span></td></tr>
+<tr><td class="num">1</td><td><code>SET_SPEED</code></td><td>只處理 0</td><td><code>speed_Target</code> = float（圈/秒）。只在速度模式（<code>MODE 0</code>）下有作用；位置模式下改了也不會被使用</td><td><span class="tag t-ok">可用</span></td></tr>
+<tr><td class="num">2</td><td><code>SET_POSITION</code></td><td>—</td><td>沒有實作</td><td><span class="tag t-dim">未實作</span></td></tr>
+<tr><td class="num">3</td><td><code>SET_IQ</code></td><td>—</td><td>沒有實作</td><td><span class="tag t-dim">未實作</span></td></tr>
+<tr><td class="num">4</td><td><code>SET_ANG_SHIFT</code></td><td>不看</td><td><code>deviceMode = SetAngShift</code>，沒有效果（同舊程式）</td><td><span class="tag t-bad">無效</span></td></tr>
+</table></div>
+<p>資料格式：byte0 指令、byte1 類型、byte2 ~ 5 float（LE）。filter 全收、不檢查 DLC、沒有回傳；<code>HAL_CAN_GetRxMessage</code> 失敗時進 <code>Error_Handler()</code>（現在會先關閉輸出，問題 #3）。擴充提案見 14.5（階段 3）。</p>
+
+<!-- ============================================================ -->
+<h2 id="eeprom">11. EEPROM</h2>
+<p>這一版的韌體<strong>開機不讀、也不寫</strong> EEPROM：電氣零點改成每次開機對齊；齒槽補償前饋 <code>exf_map</code> 是在電流回授無效時量的（問題 #1），先停用（作者 2026-10-14 決定）。板上 EEPROM 的內容沒有被動過。</p>
+<div class="tbl"><table>
+<tr><th>位址</th><th>舊程式的內容</th><th>這一版</th></tr>
+<tr><td><code>0x0000</code> ~ <code>0x0003</code></td><td>電氣零點 <code>angShift</code>（float，度）</td><td>不使用</td></tr>
+<tr><td><code>0x0040</code> 起，每 64 byte 存 32 byte，共 45 格</td><td>齒槽補償表 <code>exf_map[360]</code>（float，A，索引 = 機械角整數度）</td><td>程式保留，<code>main.c</code> 的 <code>EXF_MAP_ENABLE</code> 設成 1 才會開機讀出、在速度模式 |SPEED| ≤ 0.5 時加到 Iq 命令。索引改成 AS5600 的絕對角度（舊表是相對於舊的 <code>angShift</code>），所以要重新量測</td></tr>
+</table></div>
+<ul>
+  <li>驅動是 <code>Core/Src/M24C64.c</code>（舊的 <code>M24C64_ctrl.h</code> 搬過來，逾時由 <code>HAL_MAX_DELAY</code> 改成 10 ms）。</li>
+  <li>後代的參數區塊格式（magic、版本、CRC）與 <code>EE_SAVE</code> / <code>EE_LOAD</code> / <code>EE_ERASE</code> / <code>ZERO_CLR</code> / <code>EE_RD</code> / <code>EE_WR</code> 是階段 4，現在回 <code>[CMD] UNKNOWN</code>。WC 腳仍一直保持 Low。</li>
+  <li>專案根目錄的 <code>齒槽測試.csv</code> 是舊程式兩次齒槽量測的輸出（角度, Iq）。</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="files">12. 軟體檔案結構</h2>
+<p>和後代相同，使用者程式集中在 <code>main.c</code>，驅動各自一個 .c / .h；header 內只有宣告與 <code>static inline</code> 函式。</p>
+<div class="tbl"><table>
+<tr><th>檔案</th><th>內容</th><th>備註</th></tr>
+<tr><td><code>Core/Src/main.c</code></td><td>啟動流程、主迴圈、FOC 中斷、時槽、指令解析（<code>Cmd_Exec</code>）、<code>SET</code> / <code>GET</code>、<code>STOP</code> / <code>BRAKE</code> / <code>RUN</code>、<code>ALIGN</code>、高速擷取、<code>swd_if</code>、<code>Ctrl_Sync()</code>、CAN 接收</td><td>結構與函式名稱沿用後代，方便對照；只寫在 USER CODE 區塊內</td></tr>
+<tr><td><code>Core/Src/stm32f1xx_it.c</code></td><td>ADC1_2 的 USER CODE 內處理 JEOC</td><td>問題 #20</td></tr>
+<tr><td><code>Core/Src/AS5600.c</code>、<code>Core/Inc/AS5600.h</code></td><td>AS5600：阻塞讀暫存器、背景 DMA 讀 ANGLE（<code>AS5600_Kick</code>）、匯流排清除（<code>AS5600_Recover</code>）</td><td>取代舊的 <code>sensor.h</code></td></tr>
+<tr><td><code>Core/Src/M24C64.c</code>、<code>Core/Inc/M24C64.h</code></td><td>EEPROM 讀寫、<code>exf_map</code> 存取</td><td>取代舊的 <code>M24C64_ctrl.h</code></td></tr>
+<tr><td><code>Core/Src/micro_timer.c</code>、<code>Core/Inc/micro_timer.h</code></td><td><code>micros()</code>（TIM2 + 溢位中斷）、<code>micros16()</code></td><td></td></tr>
+<tr><td><code>Core/Inc/driver.h</code></td><td><code>SetAng()</code>、<code>runPWM()</code>、<code>Svpwm()</code>、<code>Svpwm_Counts()</code></td><td>同後代，比較值以 ARR 為滿刻度；<code>Svpwm_Counts()</code> 是整數版本</td></tr>
+<tr><td><code>Core/Inc/pi_fix.h</code></td><td>定點數 PI（電流環）</td><td>這一代才有</td></tr>
+<tr><td><code>Core/Src/sin_lut.c</code>、<code>Core/Inc/sin_lut.h</code></td><td>256 格 Q15 正弦表與內插</td><td>由 Python 產生，算式寫在檔頭</td></tr>
+<tr><td><code>Core/Inc/PID_Ctrl.h</code>、<code>Core/Inc/lowpass_filter.h</code></td><td>PID、一階低通</td><td>同後代（函式改成 <code>static inline</code>）；<code>PID_Ctrl.h</code> 另加固定取樣時間的 <code>PIDController_runTs()</code></td></tr>
+<tr><td><code>Core/Src/qfplib_wrap.s</code></td><td><code>__aeabi_fadd</code> / <code>fsub</code> / <code>fmul</code> / <code>fdiv</code> 轉到 qfplib</td><td>搭配 <code>CMakeLists.txt</code> 的 <code>--wrap</code>；這個檔案不產生除錯資訊（問題 #21）</td></tr>
+<tr><td><code>Core/Src/qfplib-m3.s</code>、<code>Core/Inc/qfplib-m3.h</code></td><td>Cortex-M3 軟體浮點函式庫</td><td></td></tr>
+<tr><td><code>Core/Inc/canbus_communication.h</code>、<code>Core/Inc/setting.h</code></td><td>CAN 指令 enum、數學常數</td><td>沒有更動</td></tr>
+<tr><td><code>ADC_filter_test.py</code>、<code>fast.csv</code>、<code>slow.csv</code>、<code>mix.csv</code>、<code>齒槽測試.csv</code></td><td>舊的濾波試驗與齒槽量測資料</td><td>沒有更動</td></tr>
+</table></div>
+<p>電腦端工具不在這個 repo：用後代 repo 的 <code>log_capture.py</code>、<code>step_capture.py</code>、<code>swd_cmd.py</code>、<code>motor_ui</code> 等，連線時自動判斷是哪一代的板子（第 16 節）。</p>
+
+<!-- ============================================================ -->
+<h2 id="issues">13. 已知問題與處理狀態</h2>
+<p>#1 ~ #17 是改寫前讀舊程式（commit <code>dda3387</code>）找到的問題，#18 以後是這次改寫與實機測試時發現的。</p>
+
+<h3>狀態總覽</h3>
+<div class="tbl"><table>
+<tr><th>#</th><th>問題</th><th>狀態</th></tr>
+<tr><td>1</td><td>ADC 觸發來源 TIM4 不存在，電流讀值恆為 0（推論）</td><td><span class="tag t-ok">已修</span> 改用 injected、TIM1 OC4REF 觸發。改寫後偏置 2047.6 / 2044.4 LSB、對齊時 CH1 0.286 A，電流環實測可以追命令。舊韌體恆為 0 的推論沒有另外驗證</td></tr>
+<tr><td>2</td><td>STOP、SET_ANG_SHIFT 沒有作用</td><td><span class="tag t-ok">已修</span>（文字指令）<code>STOP</code> / <code>BRAKE</code> / <code>RUN</code>、<code>ALIGN</code> 實測正常。<span class="tag t-warn">CAN 的 <code>STOP_MOTOR</code> / <code>SET_ANG_SHIFT</code> 仍沒有作用</span>（CAN 這一輪不動）</td></tr>
+<tr><td>3</td><td><code>Error_Handler()</code> 不關 PWM</td><td><span class="tag t-ok">已修</span> 先把 PWM_ACTIVE 拉 Low、比較值 0、關 TIM1 MOE。後代還沒有改</td></tr>
+<tr><td>4</td><td>無效角度、無效零點、陣列越界</td><td><span class="tag t-ok">已修</span> 角度 5 ms 沒更新就關閉輸出；零點每次開機對齊（沒有 NaN）；<code>exf_map</code> 預設不使用，打開時索引一定在 0 ~ 359</td></tr>
+<tr><td>5</td><td>duty 只用到 50 %</td><td><span class="tag t-ok">已修</span> 改成完整的 0 ~ 100 %（作者決定），電壓單位與後代相同，電流環重新設定</td></tr>
+<tr><td>6</td><td>位置誤差折回錯誤</td><td><span class="tag t-ok">已修</span> 以多圈位置相減</td></tr>
+<tr><td>7</td><td><code>micros()</code> 每 65 ms 回繞</td><td><span class="tag t-ok">已修</span> 開啟 TIM2 中斷（優先權最高），<code>micros()</code> 內關中斷讀取並補上還沒處理的溢位</td></tr>
+<tr><td>8</td><td>FOC 在主迴圈、頻率低</td><td><span class="tag t-ok">已修</span> FOC 在 ADC 中斷內，電流環 20 kHz（第 8 節）</td></tr>
+<tr><td>9</td><td>I2C 阻塞、無逾時</td><td><span class="tag t-ok">已修</span> 角度以 DMA 背景讀取；阻塞讀寫的逾時 5 ms（AS5600）/ 10 ms（EEPROM）；卡住時清除匯流排並重新初始化</td></tr>
+<tr><td>10</td><td>CAN 不過濾 ID、不檢查 DLC、不重送</td><td><span class="tag t-dim">未處理</span> 階段 3</td></tr>
+<tr><td>11</td><td>電流偏置只取一筆</td><td><span class="tag t-ok">已修</span> 256 筆平均（同後代）</td></tr>
+<tr><td>12</td><td>電流低通沒有作用</td><td><span class="tag t-ok">已修</span> 改成後代的 <code>IPHLPF</code> / <code>IDQLPF</code>，以固定的 FOC 週期計算，預設關閉</td></tr>
+<tr><td>13</td><td>速度環依目標換段</td><td><span class="tag t-ok">已修</span> 改成單一一組（作者決定），參數見第 7 節</td></tr>
+<tr><td>14</td><td>UART 沒有指令</td><td><span class="tag t-ok">已實作</span> 與後代相同的文字指令（第 17 節）。<span class="tag t-todo">UART 這條路徑沒有實機測過</span>（#22）</td></tr>
+<tr><td>15</td><td>EEPROM 沒有保護與檢查</td><td><span class="tag t-dim">未處理</span> 階段 4；這一版不讀寫 EEPROM</td></tr>
+<tr><td>16</td><td>nFAULT 沒有讀取</td><td><span class="tag t-warn">已調查</span> 讀值一直是 Low，見 #19，程式不使用</td></tr>
+<tr><td>17</td><td>程式整理</td><td><span class="tag t-ok">已整理</span> header 內不再定義非 static 函式與變數；刪除被註解的程式、不會被呼叫的 <code>TIM1_IRQHandler()</code>、舊的 regular ADC 與 DMA</td></tr>
+<tr><td>18</td><td>AS5600 方向與磁場旋轉方向相反</td><td><span class="tag t-ok">已處理</span> 見下</td></tr>
+<tr><td>19</td><td>nFAULT 一直是 Low</td><td><span class="tag t-todo">待確認</span> 見下</td></tr>
+<tr><td>20</td><td>F1 HAL 在這種設定下關掉 JEOC 中斷</td><td><span class="tag t-ok">已處理</span> 見下</td></tr>
+<tr><td>21</td><td><code>--wrap</code> 加上除錯資訊時 ld 當掉</td><td><span class="tag t-ok">已避開</span> 見下</td></tr>
+<tr><td>22</td><td>UART 沒有接線，UART 路徑沒有測</td><td><span class="tag t-todo">待確認</span> 見下</td></tr>
+<tr><td>23</td><td>12-bit 角度的低速限制</td><td><span class="tag t-warn">注意</span> 見下</td></tr>
+</table></div>
+
+<div class="issue">
+  <h4><span class="tag t-ok">#18</span> AS5600 讀值增加的方向和磁場 CH1→CH2→CH3 的旋轉方向相反</h4>
+  <p>電流環正常之後，照舊程式的方向（電角度 = 7 × 讀值）給正的 Iq，轉子往負方向走了約 19 度就停住：估測的電角度與實際的電角度以兩倍的速度分開，誤差到 90 度時力矩變成 0（Iq 0.7 A、電壓 2.7 V，全部是電阻壓降）。角度改成 <code>zero_raw − 讀值</code>（<code>ENC_DIR = −1</code>）之後 0.1 圈/秒 只要 25 mA。</p>
+  <p>這樣的正轉（<code>SET SPEED</code> &gt; 0）從軸端看是<strong>逆時針</strong>，作者確認與後代相同（2026-10-14）。舊程式照讀值的方向算電角度，在電流讀值為 0（#1）、電流環變成電壓命令頂到限幅的狀態下仍能轉，但力矩與方向的關係並不正確；舊程式開機的速度目標是負的（−4 rpm），可能與此有關。</p>
+</div>
+<div class="issue">
+  <h4><span class="tag t-todo">#19</span> nFAULT（PA5）運轉正常時也一直是 Low</h4>
+  <p>以 SWD 讀 GPIOA IDR，PA5 在運轉、STOP、BRAKE 時都是 0；把 PA5 暫時改成內部上拉輸入仍然是 0，表示有東西主動拉低（不只是沒有上拉電阻）。DRV8317 的 nFAULT 是開汲極輸出，Low 代表有故障或警告，但馬達運轉正常、電流量測正常。可能是故障旗標閂鎖住了（例如上電時的欠壓）、或 PA5 實際接到的不是 nFAULT。<strong>程式不使用 nFAULT</strong>，否則會一直停機。需要量測硬體確認。</p>
+</div>
+<div class="issue">
+  <h4><span class="tag t-ok">#20</span> <code>HAL_ADC_IRQHandler()</code> 在第一次 injected 轉換後就關掉 JEOC 中斷</h4>
+  <p>F1 HAL 判斷「injected 由外部觸發，但 regular 是軟體觸發、而且不是連續模式」時，會認為之後沒有轉換而關閉 JEOC 中斷（<code>stm32f1xx_hal_adc.c</code>）。所以 <code>ADC1_2_IRQHandler()</code> 的 USER CODE 內先檢查 JEOC、清旗標、呼叫 <code>Foc_AdcIsr()</code> 後直接 return，不經過 HAL。CubeMX 重新產生程式碼時這段在 USER CODE 內，不會被覆蓋。</p>
+</div>
+<div class="issue">
+  <h4><span class="tag t-ok">#21</span> 連結時 <code>--wrap</code> 搭配 <code>qfplib_wrap.s</code> 的除錯資訊，ld 會當掉</h4>
+  <p>Debug（<code>-g3</code>）建置時 <code>ld</code> 回傳 exit status 5、沒有任何訊息（GCC 13.3.1，STM32CubeCLT 1.18.0）；MinSizeRel（沒有 <code>-g</code>）正常。拿掉 <code>qfplib_wrap.s.obj</code> 的除錯資訊就能連結，所以 <code>CMakeLists.txt</code> 對這個檔案加 <code>-g0</code>。</p>
+</div>
+<div class="issue">
+  <h4><span class="tag t-todo">#22</span> UART 路徑沒有實機測試</h4>
+  <p>測試時 USB-UART（COM32）沒有接到這塊板子，所有指令、擷取與調參都是經 SWD 信箱（<code>swd_if</code>）做的。UART 與 SWD 共用同一個 <code>Cmd_Exec()</code>，但 UART 的接收中斷、<code>Cmd_Reply()</code> 的阻塞傳送、<code>LOG</code> / <code>LOGQ</code> 的二進位傳送、後代的 <code>log_capture.py</code> / <code>step_capture.py</code> 在這一代都還沒有實際跑過。已確認 USART1 的暫存器設定正確（115200、TX 啟用、PB6 為 AF 輸出、USART1 remap）。</p>
+</div>
+<div class="issue">
+  <h4><span class="tag t-warn">#23</span> 12-bit 角度的低速限制</h4>
+  <p>AS5600 一個 LSB 是 0.088 度（16 count），約每 100 µs 一筆。0.1 圈/秒 時約 2.4 ms 才變一個 LSB，速度估測要靠低通（<code>VELTF</code>）平滑，速度環的增益因此受限。</p>
+  <p><strong>2026-10-14 低速一卡一卡的處理：</strong>原本的速度環 0.1 / 4（<code>VELTF</code> 1.5 ms）在 0.1 圈/秒 時位置對等速直線的偏差 0.59 度 rms，20 ms 窗的轉速 −39 % ~ +46 %。起伏跟著機械角度重複，主要是每圈 14 次（電氣角 2 倍）與每圈 24 次，Iq 命令跟著有約 7 mA 的起伏：速度環在 1 ~ 3 Hz 的增益只有約 0.46 A/(圈/秒)，推不動這個擾動。提高 I 是主要的改善，I 再往上的限制是速度回授的延遲。以 <code>vel_capture.py</code>（後代的工具，經 SWD）實測，0.1 圈/秒：</p>
+  <div class="tbl"><table>
+  <tr><th>VEL.P / VEL.I / VELTF</th><th class="num">位置偏差 rms</th><th class="num">100 ms 窗轉速 std</th><th>其他</th></tr>
+  <tr><td>0.1 / 4 / 1.5 ms（原本）</td><td class="num">0.59 度</td><td class="num">16 %</td><td>1 → 5 圈/秒 過衝 11 %；1 圈/秒 Iq 命令 −15 ~ 78 mA</td></tr>
+  <tr><td>0.1 / 12 / 1.5 ms</td><td class="num">0.20 度</td><td class="num">6 %</td><td></td></tr>
+  <tr><td>0.1 / 25 / 1.5 ms</td><td class="num">0.11 度</td><td class="num">3.4 %</td><td>開始有 12 Hz 的振盪成分</td></tr>
+  <tr><td>0.1 / 53 / 1.5 ms（後代的 I）</td><td class="num">10 度</td><td class="num">—</td><td>2.9 Hz 振盪</td></tr>
+  <tr><td>0.2 / 25 / 1.5 ms</td><td class="num">22 度</td><td class="num">—</td><td>24 Hz 振盪</td></tr>
+  <tr><td>0.1 / 25 / 3 ms</td><td class="num">14 度</td><td class="num">—</td><td>8.6 Hz 振盪</td></tr>
+  <tr><td>0.1 / 25 / 0.5 ms</td><td class="num">0.11 度</td><td class="num">3.1 %</td><td>1 → 5 圈/秒 過衝 63 %、296 ms 進入 ±5 %；1 圈/秒 Iq 命令 −44 ~ 74 mA</td></tr>
+  <tr><td>0.05 / 25 / 0.5 ms</td><td class="num">0.16 度</td><td class="num">7 %</td><td>5 圈/秒 不穩定</td></tr>
+  <tr><td><strong>0.2 / 25 / 0.5 ms（採用）</strong></td><td class="num">0.10 度</td><td class="num">3.0 %</td><td>1 → 5 圈/秒 過衝 46 %、90 ms 進入 ±5 %；1 圈/秒 Iq 命令 −231 ~ 169 mA</td></tr>
+  <tr><td>0.2 / 35 / 0.5 ms</td><td class="num">—</td><td class="num">—</td><td>0.1 圈/秒 20 ms 窗 −45 % ~ +53 %，比 25 差</td></tr>
+  </table></div>
+  <p>0.1 度 rms 約是 1 個 LSB，已接近感測器的極限；20 ms 窗的轉速百分比在 0.1 圈/秒 時一個 LSB 就是 ±12 %，不適合當指標，所以改看位置偏差。採用的參數在 −0.1、1、5、20 圈/秒 都穩定。串級位置環原本的 <code>POS.P</code> 0.2 配新的速度環會在目標附近 ±1 度來回晃，改成 0.15（第 7 節）。MIT 的穩態誤差（約 3 度）在 <code>VELTF</code> 0.5 與 1.5 ms 時相同。</p>
+  <p><strong>AS5600 的 CONF：</strong>開機時同樣的速度環下，把慢速濾波（SF）改成 16x / 8x / 4x / 2x（暫時寫入、不燒錄）量到的位置偏差都是 0.10 ~ 0.11 度，看不出差別，所以維持出廠值，程式不寫入 CONF。</p>
+  <p>還沒做的：要在不增加 Iq 雜訊的情況下再提高增益，需要較好的速度估測（例如角度追蹤觀測器）；每圈 14 / 24 次的擾動本身（電流量測的增益差、齒槽）也還在，<code>exf_map</code> 仍停用。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="align">14. 與後代的差異與對齊計畫</h2>
+<p>目標（作者的需求）：讓這一代的功能盡量與後代對齊，使後代的 <code>log_capture</code> 系列、<code>swd_cmd.py</code>、<code>motor_ui</code>（Python）可以直接用在這一代；CAN Bus 保留二進位格式並擴充，支援多節點、指令回應與週期狀態。<strong>2026-10-14 完成階段 1、2</strong>（作者決定這一輪的範圍），階段 3 ~ 5 還沒有做。</p>
+
+<h3>14.1 硬體與平台差異</h3>
+<div class="tbl"><table>
+<tr><th>項目</th><th>這一代</th><th>後代</th><th>影響 / 處理</th></tr>
+<tr><td>MCU</td><td>F103C8T6，72 MHz，M3 無 FPU，64 KB / 20 KB</td><td>F446RET6，180 MHz，M4F，512 KB / 128 KB</td><td>浮點太慢，電流環改成定點數（第 8 節）；Flash 用了 88.8 %</td></tr>
+<tr><td>角度感測</td><td>AS5600，I2C DMA，4096 count/rev，約 10 kHz</td><td>MT6835，ABZ，65536 count/rev，40 kHz</td><td>讀值 × 16 換成同單位；方向相反（#18）；低速較粗（#23）；<code>MT6835_CAL</code>、<code>ENCC.*</code> 不適用</td></tr>
+<tr><td>PWM / FOC</td><td>TIM1 20 kHz；電流環 20 kHz、外環 5 kHz</td><td>TIM8 40 kHz；全部 40 kHz</td><td>擷取的時間解析度是後代的一半；<code>foc_hz</code> 回報實際值</td></tr>
+<tr><td>電流取樣</td><td>ADC1 injected 依序轉 2 通道（相差 1.67 µs）</td><td>ADC1 + ADC2 同步</td><td>可接受</td></tr>
+<tr><td>相序標籤</td><td>CH1 = U、CH2 = V、CH3 = W（已改成同後代）</td><td>同左</td><td>擷取欄位 <code>i_ch1</code> ~ <code>i_ch3</code>、<code>adc1</code> / <code>adc2</code>、<code>bias1</code> / <code>bias2</code> 對應同一相</td></tr>
+<tr><td>UART</td><td>USART1（PB6/PB7）</td><td>USART2（PA2/PA3）</td><td>電腦端只差 COM 埠，tools 都有 <code>--port</code></td></tr>
+<tr><td>擷取緩衝區</td><td>8 KB（14 byte/筆時 585 筆）</td><td>112 KB（8192 筆）</td><td>tools 改成以韌體回報的筆數為準</td></tr>
+<tr><td>EEPROM</td><td>M24C64 在 I2C1，已焊上</td><td>M24C64 在 I2C2，未焊上</td><td>階段 4</td></tr>
+<tr><td>CAN</td><td>使用中，1 Mbit/s</td><td>已初始化、未使用</td><td>階段 3</td></tr>
+</table></div>
+
+<h3>14.2 後代 tools 的相容性 <span class="tag t-ok">已完成</span></h3>
+<p>修改放在後代 repo（作者決定），連線時讀 MCU 的 DBGMCU_IDCODE 判斷板子（F103 = <code>0x410</code>、F446 = <code>0x421</code>），同一份工具兩代都能用。共用的判斷在後代的 <code>motor_ui/board.py</code>：板子名稱、elf 路徑（前代是 <code>../STM32_FOC/build/Debug/STM32_FOC.elf</code>）、RAM 大小、有哪些功能。</p>
+<div class="tbl"><table>
+<tr><th>Tool</th><th>修改</th><th>這一代實測</th></tr>
+<tr><td><code>motor_ui</code></td><td>依板子選 elf、掃描 RAM 的範圍（前代 20 KB）；擷取長度改用韌體回報的 <code>log_buf_bytes</code>；前代沒有的功能（棘輪 / 限位 / 無摩擦、EEPROM、MT6835_CAL）按鈕停用，也不下對應的 <code>GET</code></td><td><span class="tag t-ok">已確認</span> 連線、參數讀取、串流、擷取（offscreen 執行與 <code>Link</code> 單獨測試）；畫面上的操作沒有逐一點過</td></tr>
+<tr><td><code>swd_cmd.py</code></td><td>以 <code>STM32_Programmer_CLI</code> 讀 IDCODE 選 elf，可用 <code>--elf</code> 指定</td><td><span class="tag t-ok">已確認</span> <code>ALIGN</code> → <code>[ALIGN] OK</code></td></tr>
+<tr><td><code>log_capture.py</code>、<code>step_capture.py</code></td><td>筆數與 FOC 頻率改讀韌體回應的 <code>n=</code> 與 <code>foc_hz=</code>（<code>[LOG] SEL</code> 與 <code>[LOG] BEGIN</code>，兩代韌體都加了 <code>foc_hz=</code>；舊的後代韌體沒有時當成 40 kHz）</td><td><span class="tag t-todo">沒有測</span>（UART 沒接，#22）</td></tr>
+<tr><td><code>itest_capture.py</code>、<code>vel_capture.py</code>、<code>enc_cal.py</code></td><td>共用的 <code>Swd</code> 改成依板子選 elf 與 RAM 範圍；前代沒有 ITEST、ENCC，執行時直接說明並結束</td><td><span class="tag t-todo">沒有測</span></td></tr>
+<tr><td><code>log_analyze.py</code></td><td>不用改（讀 CSV；<code>POLE_PAIRS = 7</code> 同一顆馬達）</td><td>—</td></tr>
+</table></div>
+
+<h3>14.3 記憶體</h3>
+<div class="tbl"><table>
+<tr><th>項目</th><th class="num">Flash</th><th class="num">RAM</th><th>來源</th></tr>
+<tr><td>改寫前（HEAD <code>dda3387</code>，Debug -O0）</td><td class="num">52.6 KB（80.3 %）</td><td class="num">4.9 KB（24 %）</td><td>2026-10-14 重新編譯</td></tr>
+<tr><td>改寫後（Debug，現在是 <code>-Os -g3</code>）</td><td class="num">58.2 KB（88.8 %）</td><td class="num">12.5 KB（60.9 %）</td><td>RAM 含擷取緩衝區 8 KB、<code>swd_if</code> 368 byte、堆疊 1 KB + heap 0.5 KB</td></tr>
+<tr><td>改寫後以 -O0 編譯</td><td class="num">約 87 KB</td><td class="num">—</td><td>放不下，所以 Debug 改成 -Os（作者決定）</td></tr>
+<tr><td>改寫後以 -O2 編譯</td><td class="num">61.0 KB</td><td class="num">—</td><td>不含 qfplib 轉接；含轉接時 ld 當掉（#21）</td></tr>
+</table></div>
+<p>Flash 剩約 6 KB，階段 3 ~ 5 放不下全部的後代功能，到時候要取捨（例如拿掉浮點 <code>printf</code>、指令改成資料表驅動）。</p>
+
+<h3>14.4 分階段計畫</h3>
+<div class="tbl"><table>
+<tr><th>階段</th><th>內容</th><th>狀態</th></tr>
+<tr><td>0. 確認現況</td><td>ADC 讀值、duty 上限、主迴圈頻率、EEPROM 備份</td><td>duty 上限由作者決定改成 100 %；EEPROM 不讀寫所以沒有備份的必要；其他項目由改寫直接取代，沒有在舊韌體上量</td></tr>
+<tr><td>1. 量測與控制基礎</td><td>ADC injected + JEOC 中斷內 FOC；I2C2 400 kHz DMA；FOC 頻率；#3、#4、#6、#7、#9；<code>STOP</code> / <code>BRAKE</code> / <code>RUN</code>；nFAULT；duty 0 ~ 100 %；多圈位置；開機 <code>ALIGN</code></td><td><span class="tag t-ok">完成</span> FOC 20 kHz（電流環定點數）。nFAULT 不使用（#19）</td></tr>
+<tr><td>2. 指令層與 tools 介面</td><td>文字指令、SWD 信箱、<code>SET</code> / <code>GET</code>、速度 / 位置（串級 + MIT）模式、<code>LOG*</code>、10 欄數據行、後代 tools</td><td><span class="tag t-ok">完成</span> 數據行仍用浮點 <code>printf</code>（Flash 放得下）。UART 路徑未測（#22）</td></tr>
+<tr><td>3. CAN 擴充</td><td>14.5</td><td><span class="tag t-dim">未做</span></td></tr>
+<tr><td>4. EEPROM 參數保存</td><td>後代的參數區塊格式與 <code>EE_*</code>；WC 平時拉 High；<code>exf_map</code> 與 CAN 節點 ID 的位置；舊 <code>angShift</code> 的遷移</td><td><span class="tag t-dim">未做</span></td></tr>
+<tr><td>5. 進階模式</td><td>棘輪、限位、無摩擦、軌跡規劃 <code>PLAN.*</code>、<code>ITEST</code></td><td><span class="tag t-dim">未做</span> Flash 是主要限制</td></tr>
+</table></div>
+<p>後代要加入的對應項目：MIT 位置模式（後代 <code>doc/設計文件.html</code> 第 13 節的待辦）。這一代用 <code>SET POSTYPE 0 / 1</code> 與 <code>MIT.KP</code> / <code>MIT.KD</code>（作者 2026-10-14 決定），後代加入時用同樣的名稱。</p>
+
+<h3>14.5 CAN 協定擴充 <span class="tag t-dim">提案</span></h3>
+<p>作者已決定的方向：保留現有二進位格式並擴充；同一條 bus 上有多顆馬達，每顆有節點 ID；要有指令回應與週期狀態；<strong>節點 ID 預設 100，之後可調</strong>（2026-10-14）。其他細節<strong>以實作時的 code 為準</strong>，下表只是參考提案。</p>
+<div class="tbl"><table>
+<tr><th>項目</th><th>提案</th></tr>
+<tr><td>識別碼</td><td>11-bit 標準 ID。指令 <code>0x100 + node</code>、回應 <code>0x180 + node</code>、週期狀態 <code>0x200 + node</code>；<code>node</code> = 1 ~ 127（0 保留給廣播，例如全部 <code>STOP</code>）。預設節點 100 時是：指令 <code>0x164</code>、回應 <code>0x1E4</code>、週期狀態 <code>0x264</code></td></tr>
+<tr><td>節點 ID 設定</td><td><span class="tag t-ok">已決定</span> 預設 <strong>100</strong>（十進位），可以修改。提案：存在 EEPROM，用 UART <code>SET CAN.NODE n</code> 或 CAN 指令修改，<code>EE_SAVE</code> 後重新開機生效</td></tr>
+<tr><td>硬體過濾</td><td>filter 只收自己的指令 ID 與廣播 ID，其他節點的訊息不進 FIFO（解決 #10）</td></tr>
+<tr><td>指令框（DLC 8）</td><td>byte0 指令、byte1 參數編號 / 類型、byte2 ~ 5 數值（float 或 int32，LE）、byte6 序號（主機自訂，回應原樣帶回）、byte7 保留。DLC 不足時回錯誤</td></tr>
+<tr><td>回應框（DLC 8）</td><td>byte0 指令、byte1 參數編號、byte2 ~ 5 數值（<code>GET</code> 的結果或設定後的值）、byte6 序號、byte7 狀態（0 OK、1 ERR PARAM、2 BUSY、3 UNKNOWN）</td></tr>
+<tr><td>週期狀態</td><td>例如每 10 ms 一框：多圈位置 int32（count）、速度 int16（1/2000 圈/秒，與擷取欄位同比例）、Iq int16（1/20000 A）。模式、輸出狀態、故障旗標可放第二框或低頻送出。週期可設定、0 = 關閉</td></tr>
+<tr><td>其他</td><td>開啟 <code>AutoRetransmission</code>；取樣點調到約 75 ~ 87.5 %（例如 Prescaler 4、BS1 6、BS2 2，仍為 1 Mbit/s）；CAN 中斷優先權調到 FOC（2）之後</td></tr>
+</table></div>
+<p>指令編號（byte0），0 ~ 4 保持與現在相同，讓既有的主機程式不用改：</p>
+<div class="tbl"><table>
+<tr><th class="num">byte0</th><th>指令</th><th>對應的文字指令</th><th>備註</th></tr>
+<tr><td class="num">0</td><td><code>STOP_MOTOR</code></td><td><code>STOP</code></td><td>沿用；改為真的停止輸出（滑行）</td></tr>
+<tr><td class="num">1</td><td><code>SET_SPEED</code></td><td><code>SET SPEED</code></td><td>byte1 = 0 與現在相同；byte1 = 1 ~ 3（速度環 P / I / D）照原本的定義實作</td></tr>
+<tr><td class="num">2</td><td><code>SET_POSITION</code></td><td><code>SET ANGLE</code></td><td>原本保留未實作，補上（度，多圈）</td></tr>
+<tr><td class="num">3</td><td><code>SET_IQ</code></td><td>—</td><td>原本保留未實作，enum 的編號保留</td></tr>
+<tr><td class="num">4</td><td><code>SET_ANG_SHIFT</code></td><td><code>ALIGN</code></td><td>沿用；改為執行對齊</td></tr>
+<tr><td class="num">5 ~</td><td><code>BRAKE</code>、<code>RUN</code>、<code>SET_MODE</code>、<code>MOVE</code>、<code>POSZERO</code>、<code>SET_PARAM</code>、<code>GET_PARAM</code>、<code>EE_SAVE</code>、<code>EE_LOAD</code> …</td><td>同名文字指令</td><td><code>SET_PARAM</code> / <code>GET_PARAM</code> 以 byte1 的參數編號對應 <code>SET</code> / <code>GET</code> 的名稱（例如 <code>VEL.P</code>），兩邊共用同一張參數表</td></tr>
+</table></div>
+
+<!-- ============================================================ -->
+<h2 id="todo">15. 待確認事項</h2>
+<div class="note todo">
+<ul style="margin:0;padding-left:20px">
+  <li><span class="tag t-todo">待確認</span> nFAULT（PA5）一直是 Low 的原因（#19）：量測 DRV8317 nFAULT 腳與 PA5 之間的線路、上拉電阻。</li>
+  <li><span class="tag t-todo">待確認</span> UART 路徑（#22）：接上 USB-UART 後跑 <code>uv run log_capture.py 1 --port COMxx</code>、<code>step_capture.py</code>，確認指令回應、數據行與 <code>LOG</code> 二進位傳送。</li>
+  <li><span class="tag t-todo">待確認</span> motor_ui 在這一代的畫面操作（連線與擷取已確認，各分頁的按鈕沒有逐一點過）。</li>
+  <li><span class="tag t-ok">已確認</span> AS5600 的 CONF 維持出廠值（慢速濾波 16x）：2026-10-14 實測 16x ~ 2x 的低速表現沒有差別（#23）。<span class="tag t-todo">待確認</span> OUT 腳接 PA3 的線路是否正確（沒有使用）。</li>
+  <li><span class="tag t-todo">待確認</span> DRV8317 SLEW 的實際數值（目前依 code 註解：200 V/µs）。GAIN 1 V/A 與對齊時量到的電流相符。</li>
+  <li><span class="tag t-todo">待確認</span> CAN 收發器型號、終端電阻；CAN 主機是什麼（電腦的 USB-CAN 轉接器或其他 MCU）。</li>
+  <li><span class="tag t-todo">待決定</span> <code>exf_map</code>（齒槽前饋）要不要重新量測後打開，或改用後代的做法。</li>
+</ul>
+</div>
+<p>2026-10-14 作者決定的項目：</p>
+<ul>
+  <li><span class="tag t-ok">已決定</span> 這一輪做階段 1、2；CAN 不動；不 commit（由作者自己 commit）。</li>
+  <li><span class="tag t-ok">已決定</span> duty 改成完整的 0 ~ 100 %。</li>
+  <li><span class="tag t-ok">已決定</span> 修改 .ioc 後以 CubeMX 重新產生程式碼；程式結構跟後代一樣（使用者程式在 <code>main.c</code>，驅動各自一個檔案）。</li>
+  <li><span class="tag t-ok">已決定</span> 開機以 <code>ALIGN</code> 取得電氣零點，不讀 EEPROM；<code>exf_map</code> 停用。</li>
+  <li><span class="tag t-ok">已決定</span> 速度環改成單一一組參數；開機預設與後代相同（速度模式 0.1 圈/秒）。</li>
+  <li><span class="tag t-ok">已決定</span> 位置模式：<code>MODE 1</code> 內以 <code>SET POSTYPE</code> 切換串級（0）與 MIT（1），參數 <code>MIT.KP</code> / <code>MIT.KD</code>。</li>
+  <li><span class="tag t-ok">已決定</span> 電流量 CH1 + CH2（同後代），CH3 由 KCL 推算。</li>
+  <li><span class="tag t-ok">已決定</span> 加入的調校參數：<code>IDLOOP</code>、<code>BIAS1/2</code>、<code>VELAW</code> / <code>VELB</code> / <code>VELTF</code>、<code>IPHLPF</code> / <code>IPHTF</code> / <code>IDQLPF</code> / <code>IDQTF</code>、<code>POSZERO</code>、<code>I2C_SCAN</code>。</li>
+  <li><span class="tag t-ok">已決定</span> 浮點放不進 FOC 中斷，電流環改成定點數、目標 20 kHz。</li>
+  <li><span class="tag t-ok">已決定</span> 正轉方向與後代相同（從軸端看逆時針，#18）。</li>
+  <li><span class="tag t-ok">已決定</span> Debug 建置改成 <code>-Os -g3</code>。</li>
+  <li><span class="tag t-ok">已決定</span> 後代 tools 一起修改，連線時自動判斷板子。</li>
+  <li><span class="tag t-ok">已決定</span>（較早）角度來源 I2C DMA、CAN 節點 ID 預設 100、三相標籤同後代、保留 MIT。</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="build">16. 建置、燒錄與工具</h2>
+<p>需要 STM32CubeCLT（<code>arm-none-eabi-gcc</code>、<code>cmake</code>、<code>ninja</code>、<code>STM32_Programmer_CLI</code> 在 PATH 內）。<code>CMakePresets.json</code> 有 debug / relWithDebInfo / release / minSizeRel 四種。</p>
+<pre><code>cmake --preset debug
+cmake --build build/debug
+STM32_Programmer_CLI --connect port=swd --download build/debug/STM32_FOC.elf -hardRst -rst --start</code></pre>
+<ul>
+  <li>Debug 是 <code>-Os -g3</code>（2026-10-14 由 <code>-O0</code> 改過來，-O0 放不下）；MinSizeRel / Release 是 <code>-Os</code>。relWithDebInfo（<code>-O2</code>）會遇到 #21 的 ld 問題，不要用。</li>
+  <li><code>CMakeLists.txt</code>：新增的 .c 要加到 <code>target_sources</code>；單精度四則運算經 <code>-Wl,--wrap=__aeabi_fadd</code> 等改用 qfplib。</li>
+  <li>修改周邊設定時改 <code>STM32_FOC.ioc</code>，再以 CubeMX 產生程式碼（命令列：<code>STM32CubeMX.exe -q script.txt</code>，script 內容 <code>config load …/STM32_FOC.ioc</code>、<code>project generate</code>、<code>exit</code>）。使用者程式都在 USER CODE 區塊內。</li>
+  <li>修改 <code>main.c</code> 的 <code>SwdIf</code>、<code>LOG_F_*</code>、<code>SWD_CMD_*</code> 時，要同步修改後代的 tools（同後代的規則）。</li>
+</ul>
+<h3>電腦端工具（在後代 repo 執行）</h3>
+<pre><code>cd ../STM32F446RE_TEST
+uv run -m motor_ui                    # SWD，自動判斷板子
+uv run swd_cmd.py ALIGN               # SWD，自動選 ../STM32_FOC/build/Debug/STM32_FOC.elf
+uv run log_capture.py 40 --port COMxx # UART（這一代還沒測過）</code></pre>
+<p>工具找的是 <code>build/Debug/STM32_FOC.elf</code>；Windows 不分大小寫，和 preset 產生的 <code>build/debug</code> 是同一個目錄。板上的韌體必須和這個 elf 是同一次編譯（<code>swd_cmd.py</code> 依符號位址寫入；<code>motor_ui</code> 找不到符號時會改成掃描 RAM）。</p>
+
+<!-- ============================================================ -->
+<h2 id="cmd">17. 指令與後代的差異</h2>
+<p>指令的格式、回應前綴與後代的 <code>doc/serial指令.html</code> 相同（一行一個、不分大小寫、最長 31 字元；UART 115200 8N1，或 SWD 信箱）。以下只列差異。</p>
+<div class="tbl"><table>
+<tr><th>指令 / 參數</th><th>這一代</th></tr>
+<tr><td><code>STOP</code>、<code>BRAKE</code>、<code>RUN</code>、<code>ALIGN</code>、<code>POSZERO</code></td><td>同後代。<code>ALIGN</code> 失敗時回 <code>[ALIGN] ERR ANG</code>（後代是 <code>ERR SPI</code>）</td></tr>
+<tr><td><code>LOG</code>、<code>LOGQ</code>、<code>LOGSEL</code>、<code>LOGC</code>、<code>LOGS</code>、<code>LOGX</code></td><td>同後代，欄位編號、大小、比例相同。筆數 = 8192 ÷ 每筆 byte 數（預設 585 筆）；FOC 20 kHz，所以 div = 1 時 0.029 秒、div = 40 時 1.17 秒。<code>[LOG] SEL</code> 與 <code>[LOG] BEGIN</code> 的最後多一個 <code>foc_hz=</code>（後代也加了）。<code>enc</code> 欄位是 AS5600 讀值 × 16</td></tr>
+<tr><td><code>SET</code> / <code>GET</code> 的 PID（<code>ID</code>、<code>IQ</code>、<code>VEL</code>、<code>POS</code>）</td><td>同後代。電流環（<code>ID</code> / <code>IQ</code>）的 <code>D</code>、<code>RAMP</code> 可以設，但這一代的定點電流環不使用</td></tr>
+<tr><td><code>SPEED</code>、<code>MODE</code>、<code>ANGLE</code>、<code>MOVE</code>、<code>POSNOW</code>、<code>POSDIV</code></td><td>同後代，但 <code>MODE</code> 只接受 0、1；<code>POSDIV</code> 以 4 為單位進位</td></tr>
+<tr><td><code>POSTYPE</code>、<code>MIT.KP</code>、<code>MIT.KD</code>、<code>GET MIT</code></td><td>這一代才有（第 6 節）。<code>GET MIT</code> 回 <code>[PARAM] MIT KP=… KD=…</code></td></tr>
+<tr><td><code>IDLOOP</code>、<code>BIAS1</code> / <code>BIAS2</code>、<code>VELAW</code>、<code>VELB</code>、<code>IPHLPF</code> / <code>IPHTF</code>、<code>IDQLPF</code> / <code>IDQTF</code></td><td>同後代</td></tr>
+<tr><td><code>VELTF</code></td><td>範圍 0 ~ 50 ms（後代 0 ~ 5 ms），預設 0.5 ms</td></tr>
+<tr><td><code>I2C_SCAN</code></td><td>掃 I2C1（EEPROM 那一條，找得到 <code>0x50</code>）；I2C2 正在連續讀 AS5600，不掃</td></tr>
+<tr><td><code>MT6835_CAL</code>、<code>EE_SAVE</code>、<code>EE_LOAD</code>、<code>EE_ERASE</code>、<code>ZERO_CLR</code>、<code>EE_RD</code>、<code>EE_WR</code>、<code>ITEST</code>、<code>LIM_HERE</code>、<code>LIM_SPAN</code></td><td>沒有，回 <code>[CMD] UNKNOWN</code></td></tr>
+<tr><td><code>RAT.*</code>、<code>LIM.*</code>、<code>NOF.*</code>、<code>PLAN.*</code>、<code>ENCC.*</code>、<code>IT.*</code></td><td>沒有，回 <code>[PARAM] ERR PARAM</code></td></tr>
+<tr><td><code>swd_cmd</code>（SWD 寫入編號）</td><td>只有 6（<code>ALIGN</code>）；其他編號回 <code>[CMD] UNKNOWN</code></td></tr>
+<tr><td>開機訊息</td><td><code>[AS5600] STATUS=… AGC=… CONF=… ZPOS=… MPOS=…</code>、<code>[ZERO] ALIGN</code>、<code>HAL_CAN1_Star1 is HAL_OK</code></td></tr>
+<tr><td>故障訊息</td><td><code>[ANG] ERR TIMEOUT</code> + <code>[OUT] COAST</code>（角度逾時，關閉輸出）；<code>[ANG] I2C RESET</code> / <code>[ANG] ERR I2C</code>（I2C2 重新初始化成功 / 失敗）</td></tr>
+</table></div>
+
+</main>
+</div>
+<button class="theme-btn" type="button" onclick="(function(){var r=document.documentElement;var d=r.getAttribute('data-theme');var dark=d?d==='dark':matchMedia('(prefers-color-scheme: dark)').matches;r.setAttribute('data-theme',dark?'light':'dark');})()">切換深 / 淺色</button>
+</body>
+</html>

@@ -29,9 +29,10 @@ set(CMAKE_ASM_FLAGS "${CMAKE_C_FLAGS} -x assembler-with-cpp -MMD -MP")
 # -u_printf_float
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -fdata-sections -ffunction-sections -u_printf_float")
 
-set(CMAKE_C_FLAGS_DEBUG "-O0 -g3")
+# Debug 用 -Os：-O0 時程式超過 64 KB Flash (2026-10-14：-O0 約 87 KB、-Os 約 57 KB)
+set(CMAKE_C_FLAGS_DEBUG "-Os -g3")
 set(CMAKE_C_FLAGS_RELEASE "-Os -g0")
-set(CMAKE_CXX_FLAGS_DEBUG "-O0 -g3")
+set(CMAKE_CXX_FLAGS_DEBUG "-Os -g3")
 set(CMAKE_CXX_FLAGS_RELEASE "-Os -g0")
 
 set(CMAKE_CXX_FLAGS "${CMAKE_C_FLAGS} -fno-rtti -fno-exceptions -fno-threadsafe-statics")

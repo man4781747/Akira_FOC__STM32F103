@@ -50,6 +50,21 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
     ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/qfplib-m3.s
+    ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/micro_timer.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/AS5600.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/M24C64.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/sin_lut.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/qfplib_wrap.s
+)
+
+# 單精度四則運算改用 qfplib-m3 (Core/Src/qfplib_wrap.s)，FOC 中斷的浮點運算約快 3 倍。
+# qfplib_wrap.s 帶除錯資訊 (-g3) 時 ld 會當掉 (exit status 5，GCC 13.3.1)，這個檔案不產生除錯資訊
+set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/qfplib_wrap.s PROPERTIES COMPILE_OPTIONS "-g0")
+target_link_options(${CMAKE_PROJECT_NAME} PRIVATE
+    -Wl,--wrap=__aeabi_fadd
+    -Wl,--wrap=__aeabi_fsub
+    -Wl,--wrap=__aeabi_fmul
+    -Wl,--wrap=__aeabi_fdiv
 )
 
 # Add include paths

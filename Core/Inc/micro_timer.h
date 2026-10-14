@@ -1,43 +1,21 @@
 #ifndef MICRO_TIMER_H
 #define MICRO_TIMER_H
 
+#include <stdint.h>
 #include "main.h"
 
+// TIM2：PSC = 71，1 MHz、16 bit。溢位次數由 TIM2 更新中斷 (overflow_handler) 累加，
+// 組成 64 bit 的微秒計數。TIM2 中斷的優先權要最高，否則在其他中斷內呼叫 micros() 會少算一次溢位
 extern TIM_HandleTypeDef htim2;
 
-volatile uint32_t uwTick_us_overflow = 0; // 微秒級溢出計數器
+void init_micros_timer(void);
+uint64_t micros(void);
+void overflow_handler(void);
 
-void init_micros_timer(void)
+// micros() 的低 16 bit，等於 TIM2 計數值，擷取的 t_us 欄位用
+static inline uint16_t micros16(void)
 {
-  // 啟動你配置的計時器 (例如 TIM2)
-  // HAL_TIM_Base_Start(&htim2);
-
-  // 如果使用16位元計時器並需要長時間計數，啟用更新中斷
-  // (這會讓每次計時器溢出時觸發中斷)
-  HAL_TIM_Base_Start_IT(&htim2);
-}
-
-uint64_t micros(void)
-{
-  uint32_t current_count = __HAL_TIM_GET_COUNTER(&htim2);
-  uint32_t overflow_count = uwTick_us_overflow;
-
-  // 處理潛在的競態條件：如果在讀取計數器後發生溢出
-  if (__HAL_TIM_GET_FLAG(&htim2, TIM_FLAG_UPDATE) && (current_count < 100)) // 檢查是否剛溢出 (計數器又從0開始)
-  {
-    overflow_count++;
-  }
-
-  return (uint64_t)overflow_count * (65535UL + 1) + current_count;
-}
-
-// 實作 Timer 更新中斷回調函數
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
-{
-  if (htim->Instance == TIM2) // 替換為你使用的計時器實例
-  {
-    uwTick_us_overflow++;
-  }
+  return (uint16_t)__HAL_TIM_GET_COUNTER(&htim2);
 }
 
 #endif
