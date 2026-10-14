@@ -22,7 +22,7 @@
  *  - 角度：AS5600 (I2C2, 12 bit) 以 DMA 在背景連續讀取，換成 65536 count/rev (左移 4 bit) 後與後代同單位
  *  - FOC：TIM1 CH4 (OC4REF) 經 TRGO 觸發 ADC1 injected 轉換，JEOC 中斷內執行 (Foc_AdcIsr)
  *  - 電流：ADC1 依序轉 CH1 (PB1, IN9)、CH2 (PB0, IN8)，CH3 由 KCL 推算
- *  - 沒有 MT6835 自校正、編碼器補償 (ENCC)、EEPROM 參數區塊、棘輪 / 限位 / 無摩擦 / 軌跡規劃 / ITEST
+ *  - 沒有 MT6835 自校正、編碼器補償 (ENCC)、EEPROM 參數區塊、棘輪 / 限位 / 無摩擦 / 軌跡規劃
  *  - CAN 指令沿用舊的處理方式 (HAL_CAN_RxFifo0MsgPendingCallback)
  * 詳見 doc/設計文件.html。
  *
@@ -131,7 +131,7 @@ int32_t cur1_fix, cur2_fix;            // CH1、CH2 電流
 int32_t id_fix, iq_fix;                // Id、Iq
 int32_t vd_fix, vq_fix, va_fix, vb_fix;  // 電壓命令 (d、q、α、β)
 volatile int32_t iq_ref_fix;           // Iq 命令，速度環 / MIT 算出 uq_Target 時更新
-int32_t id_ref_fix;                    // Id 命令，固定 0
+int32_t id_ref_fix;                    // Id 命令，只有 ITEST_CUR 期間不是 0
 PiFix pi_iq, pi_id;
 uint8_t foc_slot;                      // 0 ~ VEL_DIV-1
 float ang_temp;              // 機械角 (度，0 ~ 360)，FOC 這一次用的角度 (含外插)
@@ -199,6 +199,36 @@ volatile float pos_ts, pos_inv_ts;  // 位置環的週期 (秒) 與其倒數，C
 // Id 環：預設啟用，目標固定為 0；SET IDLOOP 0 關閉 (ud 固定為 0)
 volatile uint8_t id_loop = 1;
 float id_Target;                    // Id 命令 (A)，固定 0 (後代只有 ITEST 會改)
+
+// ---- 電流環測試 (ITEST，同後代)：速度模式下暫時取代速度環，d、q 兩軸各在 A、B 兩個準位之間切換 (方波) ----
+//   ITEST_CUR：準位是電流命令 (A)，交給 Iq / Id 兩個 PI，測試期間 Id 環一定啟用
+//   ITEST_VOLT：準位是電壓 (V)，不經過 PI 直接輸出，用來量 R、L
+// FOC 中斷內只用定點數：準位由 Ctrl_Sync() 換算 (測試中 SET 改準位最慢 5 ms 後生效)
+#define ITEST_OFF          0
+#define ITEST_CUR          1
+#define ITEST_VOLT         2
+#define ITEST_I_MAX        1.0f    // 電流準位的上限 (A)
+#define ITEST_U_MAX        3.0f    // 電壓準位的上限 (V)
+#define ITEST_I_TRIP       2.0f    // 實測 Id / Iq 超過就結束 (A)
+#define ITEST_SPEED_TRIP   40.0f   // 轉速超過就結束 (圈/秒)
+#define ITEST_HALF_MAX     40000   // 半週期的上限 (FOC 中斷次數)，20 kHz 時 2 秒
+#define ITEST_MS_DEFAULT   1000
+#define ITEST_MS_MAX       10000
+#define ITEST_END_TIME     1       // itest_end：上一次測試結束的原因
+#define ITEST_END_STOP     2
+#define ITEST_END_SPEED    3
+#define ITEST_END_CURRENT  4
+volatile uint8_t itest_mode = ITEST_OFF;
+volatile uint8_t itest_end;
+volatile uint32_t itest_half;       // 半週期 (FOC 中斷次數)
+volatile uint32_t itest_left;       // 還剩幾次 FOC 中斷
+uint32_t itest_cnt;                 // 以下只在 FOC 中斷內使用
+uint8_t itest_phase;                // 0 = A 準位，1 = B 準位
+int32_t itest_q, itest_d;           // 這一次中斷兩軸的準位 (定點：電流或電壓單位)
+float it_qa, it_qb, it_da, it_db;   // 兩軸的 A、B 準位 (SET IT.QA 等)，測試中也可以改
+volatile int32_t it_fix[2][4];      // [0] 電流單位、[1] 電壓單位：QA、QB、DA、DB，已限制在上限內。Ctrl_Sync() 算出
+int32_t itest_i_trip_fix;           // ITEST_I_TRIP 換成電流單位
+int32_t itest_spd_trip_q16;         // ITEST_SPEED_TRIP 換成 speed_q16 的單位
 
 // ---- 速度環的附加項 (同後代) ----
 // 速度回授低通的時間常數 (秒)，SET VELTF 以 ms 為單位。AS5600 只有 12 bit，低速時一個 LSB 的跳動就很大，
@@ -497,10 +527,11 @@ int main(void)
   DWT->CYCCNT = 0;
   DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 
-  // 電流環：同一顆馬達，後代實測 R 約 3.7 Ω、L 約 0.9 mH (以 10 V 基準計)。P = L·ωc、I = R·ωc，
-  // 這一代 FOC 頻率較低，ωc 先取 2π × 500 Hz (後代是 1 kHz)，限幅同後代 5.0
-  PIDController_init(&PID__current_Id, 2.8, 11600, 0, 0, 5.0);
-  PIDController_init(&PID__current_Iq, 2.8, 11600, 0, 0, 5.0);
+  // 電流環：ITEST 電壓步階實測 R 3.29 Ω、L 約 0.87 mH (以 10 V 基準計，2026-10-14)。P = L·ωc、I = R·ωc，
+  // ωc 取 2π × 750 Hz (作者 2026-10-14 決定)：d 軸 0 → 0.3 A 進入 ±5% 0.45 ms、過衝 < 1%。
+  // 1 kHz (P 5.5 / I 20700，後代的頻寬) 是 0.30 ms，但電壓命令的雜訊比 500 Hz 多約 70%。限幅同後代 5.0
+  PIDController_init(&PID__current_Id, 4.1, 15500, 0, 0, 5.0);
+  PIDController_init(&PID__current_Iq, 4.1, 15500, 0, 0, 5.0);
   // 速度環 P = 0.2、I = 25、VELTF 0.5 ms (2026-10-14 實測)：0.1 圈/秒 時位置對等速直線的偏差 0.10 度 rms
   // (約 1 個 AS5600 LSB；原本的 0.1 / 4 是 0.59 度，每圈 14、24 次的起伏推不動，低速一卡一卡)；
   // 1 → 5 圈/秒 的步階過衝 46%、90 ms 進入 ±5%。I = 53 (後代的值) 會振盪。代價是 1 ~ 5 圈/秒 時
@@ -1259,7 +1290,7 @@ static uint8_t Align_Do(void)
 static void Align_Start(void)
 {
   // 輸出關閉時 SetAng(0) 拉不動轉子，對出來的零點是錯的
-  if (log_state != LOG_IDLE || out_state != OUT_RUN) {
+  if (log_state != LOG_IDLE || out_state != OUT_RUN || itest_mode != ITEST_OFF) {
     Cmd_Reply("[ALIGN] BUSY");
     return;
   }
@@ -1343,6 +1374,11 @@ static float *Param_Find(const char *name)
   }
   if (strcmp(name, "MIT.KP") == 0) return &mit_kp;
   if (strcmp(name, "MIT.KD") == 0) return &mit_kd;
+  // 電流環測試 (ITEST) 的準位；範圍在 Ctrl_Sync() 依測試的種類限制
+  if (strcmp(name, "IT.QA") == 0) return &it_qa;
+  if (strcmp(name, "IT.QB") == 0) return &it_qb;
+  if (strcmp(name, "IT.DA") == 0) return &it_da;
+  if (strcmp(name, "IT.DB") == 0) return &it_db;
   const char *rest;
   int i = Pid_Index(name, &rest);
   if (i < 0 || *rest != '.') {
@@ -1390,6 +1426,11 @@ static uint8_t Pos_ParamSet(const char *name, float value)
       return 1;
     }
     if (value != ctrl_mode) {
+      // 電流環測試只在速度模式下進行
+      if (value != CTRL_MODE_VEL && itest_mode != ITEST_OFF) {
+        Cmd_Reply("[PARAM] BUSY");
+        return 1;
+      }
       if (value == CTRL_MODE_POS) {
         Pos_Enter();
       } else {
@@ -1488,7 +1529,16 @@ static void Ctrl_Sync(void)
   // 位置環實際的週期：pos_div 以 VEL_DIV 為單位進位
   float pts = foc_dt * (float)(((pos_div + VEL_DIV - 1) / VEL_DIV) * VEL_DIV);
   float pinv = 1.f / pts;
+  const float it_lv[4] = {it_qa, it_qb, it_da, it_db};
+  int32_t it_f[2][4];
+  for (int i = 0; i < 4; i++) {
+    it_f[0][i] = (int32_t)(constrain(it_lv[i], -ITEST_I_MAX, ITEST_I_MAX) * (1.f / I_UNIT_A));
+    it_f[1][i] = (int32_t)(constrain(it_lv[i], -ITEST_U_MAX, ITEST_U_MAX) * v_fix_per_volt);
+  }
   __disable_irq();
+  memcpy((void *)it_fix, it_f, sizeof(it_f));
+  itest_i_trip_fix = (int32_t)(ITEST_I_TRIP * (1.f / I_UNIT_A));
+  itest_spd_trip_q16 = (int32_t)(ITEST_SPEED_TRIP * ((float)ENC_CPR * 65536.f / 1e6f));
   pi_iq.kp = iq_kp;
   pi_iq.ki = iq_ki;
   pi_iq.limit = iq_lim;
@@ -1630,6 +1680,8 @@ static void Param_Get(const char *name)
     snprintf(msg, sizeof(msg), "[PARAM] IPHTF=%.6g", iph_tf * 1e3f);
   } else if (strcmp(name, "IDQTF") == 0) {
     snprintf(msg, sizeof(msg), "[PARAM] IDQTF=%.6g", idq_tf * 1e3f);
+  } else if (strcmp(name, "ITEST") == 0) {
+    snprintf(msg, sizeof(msg), "[PARAM] ITEST=%u END=%u", itest_mode, itest_end);
   } else {
     msg[0] = '\0';
   }
@@ -1650,6 +1702,12 @@ static void Param_Get(const char *name)
 static void Out_Stop(uint8_t state)
 {
   FocDo = 0;
+  if (itest_mode != ITEST_OFF) {
+    itest_mode = ITEST_OFF;
+    itest_end = ITEST_END_STOP;
+    id_ref_fix = 0;
+    iq_ref_fix = 0;
+  }
   if (state == OUT_COAST) {
     HAL_GPIO_WritePin(PWM_ACTIVE_GPIO_Port, PWM_ACTIVE_Pin, GPIO_PIN_RESET);
   }
@@ -1679,6 +1737,57 @@ static void Out_Run(void)
     FocDo = 1;
   }
   Cmd_Reply("[OUT] RUN");
+}
+
+// ITEST <mode> [half] [ms]：mode 0 = 結束，1 = 電流步階 (ITEST_CUR)，2 = 電壓步階 (ITEST_VOLT)；
+// half 是半週期 (FOC 中斷次數)，ms 是總長度。準位先用 SET IT.QA / IT.QB / IT.DA / IT.DB 設好 (同後代)
+static void Itest_Cmd(char *args)
+{
+  uint32_t mode, half = 0, ms = ITEST_MS_DEFAULT;
+  uint8_t ok = Cmd_ParseUint(&args, &mode);
+  if (ok && mode != ITEST_OFF) {
+    ok = Cmd_ParseUint(&args, &half);
+    if (ok && *args != '\0') {
+      ok = Cmd_ParseUint(&args, &ms);
+    }
+  }
+  if (!ok || *args != '\0' || mode > ITEST_VOLT) {
+    Cmd_Reply("[ITEST] ERR PARAM");
+    return;
+  }
+  if (mode == ITEST_OFF) {
+    // 由 FOC 中斷在下一次執行時結束，速度環與電流環的積分在那裡重置
+    __disable_irq();
+    if (itest_mode != ITEST_OFF) {
+      itest_left = 0;
+      itest_end = ITEST_END_STOP;
+    }
+    __enable_irq();
+    Cmd_Reply("[ITEST] STOP");
+    return;
+  }
+  if (half < 1 || half > ITEST_HALF_MAX || ms < 1 || ms > ITEST_MS_MAX) {
+    Cmd_Reply("[ITEST] ERR PARAM");
+    return;
+  }
+  float max = (mode == ITEST_CUR) ? ITEST_I_MAX : ITEST_U_MAX;
+  if (fabsf(it_qa) > max || fabsf(it_qb) > max || fabsf(it_da) > max || fabsf(it_db) > max) {
+    Cmd_Reply("[ITEST] ERR LEVEL");
+    return;
+  }
+  if (itest_mode != ITEST_OFF || ctrl_mode != CTRL_MODE_VEL || out_state != OUT_RUN || !FocDo) {
+    Cmd_Reply("[ITEST] BUSY");
+    return;
+  }
+  Ctrl_Sync();         // 剛 SET 的準位馬上換算
+  speed_Target = 0.f;  // 結束後由速度環停在原地
+  itest_half = half;
+  itest_left = ms * foc_hz / 1000;
+  itest_cnt = 0;
+  itest_phase = 0;
+  itest_end = 0;
+  itest_mode = (uint8_t)mode;
+  Cmd_Reply("[ITEST] START");
 }
 
 static uint16_t Log_RecSize(uint32_t mask)
@@ -1912,6 +2021,8 @@ static void Cmd_Exec(char *cmd_line)
     I2c_Scan();
   } else if (strcmp(cmd_line, "ALIGN") == 0) {
     Align_Start();
+  } else if (strncmp(cmd_line, "ITEST ", 6) == 0) {
+    Itest_Cmd(cmd_line + 6);
   } else if (strcmp(cmd_line, "POSZERO") == 0) {
     Pos_CmdZero();
   } else if (strncmp(cmd_line, "SET ", 4) == 0) {
@@ -2015,6 +2126,8 @@ static void Foc_Slot2(uint8_t run)
 {
   if (!run) {
     uq_Target = 0.f;
+  } else if (itest_mode != ITEST_OFF) {
+    return;  // 電流環測試取代速度環，Iq 命令由 Itest_Process() 給
   } else if (ctrl_mode == CTRL_MODE_POS && pos_type == POS_TYPE_MIT) {
     // MIT：彈簧 (MIT.KP，A/度) + 阻尼 (MIT.KD，A/(圈/秒)) 直接算 Iq，限幅同速度環的輸出 (VEL.LIMIT)
     float limit = PID__velocity.limit;
@@ -2046,6 +2159,54 @@ static void Foc_Slot3(uint8_t run)
     pos_speed_cmd = constrain(PIDController_runTs(&PID__position, (float)pos_err_count * POS_DEG_PER_COUNT, pos_ts, pos_inv_ts, 0),
                               -pos_limit, pos_limit);
   }
+}
+
+// 電流環測試的準位，在 FOC 中斷內取代速度環 (同後代，定點數)。回傳這一次中斷的測試種類；
+// 結束時 itest_mode 變回 ITEST_OFF，速度環從靜止接手
+static inline uint8_t Itest_Process(void)
+{
+  uint8_t mode = itest_mode;
+  if (mode == ITEST_OFF) {
+    return ITEST_OFF;
+  }
+  uint8_t end = 0;
+  int32_t trip = itest_i_trip_fix;
+  int32_t spd_trip = itest_spd_trip_q16;
+  if (id_fix > trip || id_fix < -trip || iq_fix > trip || iq_fix < -trip) {
+    end = ITEST_END_CURRENT;
+  } else if (speed_q16 > spd_trip || speed_q16 < -spd_trip) {
+    end = ITEST_END_SPEED;
+  } else if (itest_left == 0) {
+    end = itest_end ? itest_end : ITEST_END_TIME;
+  }
+  if (end) {
+    itest_end = end;
+    itest_mode = ITEST_OFF;
+    itest_q = itest_d = 0;
+    uq_Target = 0.f;
+    iq_ref_fix = id_ref_fix = 0;
+    log_iq_cmd_i = 0;
+    PIDController_reset(&PID__velocity);
+    PiFix_Reset(&pi_iq);
+    PiFix_Reset(&pi_id);
+    return ITEST_OFF;
+  }
+  itest_left--;
+  const volatile int32_t *lv = it_fix[mode == ITEST_CUR ? 0 : 1];
+  itest_q = itest_phase ? lv[1] : lv[0];
+  itest_d = itest_phase ? lv[3] : lv[2];
+  if (++itest_cnt >= itest_half) {
+    itest_cnt = 0;
+    itest_phase ^= 1;
+  }
+  if (mode == ITEST_CUR) {
+    iq_ref_fix = itest_q;
+    id_ref_fix = itest_d;
+  } else {
+    iq_ref_fix = id_ref_fix = 0;
+  }
+  log_iq_cmd_i = (int32_t)(((int64_t)iq_ref_fix * log_k_i) >> 16);
+  return mode;
 }
 
 // (a × b) >> 15，a 是定點數、b 是 Q15
@@ -2180,22 +2341,38 @@ static void Foc_Step(uint16_t a1, uint16_t a2)
   iq_fix = iq;
 
   if (!run) {
+    if (itest_mode != ITEST_OFF) {
+      // 角度逾時關閉了輸出：測試結束
+      itest_mode = ITEST_OFF;
+      itest_end = ITEST_END_STOP;
+      iq_ref_fix = id_ref_fix = 0;
+    }
     vd_fix = vq_fix = va_fix = vb_fix = 0;
     iq_pi_on = id_pi_on = 0;
     Log_Sample();
     return;
   }
-  // 上一次沒有執行該 PI (剛 RUN、剛打開 Id 環)：從 0 開始積分
-  if (!iq_pi_on) {
-    PiFix_Reset(&pi_iq);
+  uint8_t itest = Itest_Process();
+  int32_t vq, vd;
+  if (itest == ITEST_VOLT) {
+    // 開迴路：不經過 PI
+    vq = itest_q;
+    vd = itest_d;
+    iq_pi_on = id_pi_on = 0;
+  } else {
+    uint8_t id_on = (id_loop || itest == ITEST_CUR);
+    // 上一次沒有執行該 PI (剛 RUN、剛打開 Id 環)：從 0 開始積分
+    if (!iq_pi_on) {
+      PiFix_Reset(&pi_iq);
+    }
+    if (id_on && !id_pi_on) {
+      PiFix_Reset(&pi_id);
+    }
+    iq_pi_on = 1;
+    id_pi_on = id_on;
+    vq = PiFix_Run(&pi_iq, iq_ref_fix - iq);
+    vd = id_on ? PiFix_Run(&pi_id, id_ref_fix - id) : 0;
   }
-  if (id_loop && !id_pi_on) {
-    PiFix_Reset(&pi_id);
-  }
-  iq_pi_on = 1;
-  id_pi_on = id_loop;
-  int32_t vq = PiFix_Run(&pi_iq, iq_ref_fix - iq);
-  int32_t vd = id_loop ? PiFix_Run(&pi_id, id_ref_fix - id) : 0;
   vq_fix = vq;
   vd_fix = vd;
   // 反 Park
