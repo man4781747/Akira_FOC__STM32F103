@@ -57,6 +57,8 @@ void Error_Handler(void);
 /* USER CODE BEGIN EFP */
 // FOC：ADC1 injected 轉換完成 (JEOC) 時由 ADC1_2_IRQHandler 呼叫 (main.c)
 void Foc_AdcIsr(void);
+// CAN 狀態回報：SysTick_Handler 每 1 ms 呼叫 (main.c)
+void Can_Tick(void);
 
 /* USER CODE END EFP */
 

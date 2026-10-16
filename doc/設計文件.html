@@ -240,6 +240,7 @@ svg .ar{fill:var(--muted)}
 <h2 id="pins">4. 腳位配置</h2>
 <p>來源：<code>STM32_FOC.ioc</code>、<code>Core/Inc/main.h</code>、<code>stm32f1xx_hal_msp.c</code>。<span class="tag t-ok">已確認</span></p>
 <div class="note">2026-10-14 三相標籤改成和後代相同：<strong>TIM1 CH1 = U、CH2 = V、CH3 = W</strong>（舊標籤是 CH1 = V、CH2 = U）。只改 .ioc 標籤，接線不動；對應的電流腳也跟著改名（PB1 = <code>Current_U</code>、PB0 = <code>Current_V</code>）。對齊時量到 CH1 = +0.286 A、CH2 = −0.142 A、CH3 = −0.144 A，確認 PB1 是 CH1 那一相、極性為正。</div>
+<div class="note">2026-10-15 平衡車的馬達三條線中有兩條接反，無法改線：<code>main.c</code> 的 <code>PHASE_SWAP 1</code> 以軟體對調兩相 (Clarke 的 iβ 與送進 SVPWM 的 uβ 取負，α 不變)。接反哪兩條造成的 120° 偏移由開機 ALIGN 吸收，<code>ENC_DIR</code> 與正轉方向都不變。編譯期設定，所有板子共用；接線正常的馬達要改回 0。實測速度 ±0.5 / ±2 / 0.1 圈/秒、力矩 ±0.15 A 正常。</div>
 <div class="tbl"><table>
 <tr><th>Pin</th><th>標籤</th><th>功能 / AF</th><th>模式</th><th>說明</th></tr>
 <tr><td><code>PA8</code></td><td>PWM_U_H</td><td>TIM1_CH1</td><td>AF PP, High speed</td><td>CH1 (U) PWM → DRV8317 INH</td></tr>
@@ -276,7 +277,7 @@ svg .ar{fill:var(--muted)}
 <tr><td><strong>I2C2</strong></td><td>APB1</td><td><strong>400 kHz</strong>（Fast mode，duty 2），7-bit；EV / ER 中斷開啟；RX DMA</td><td>一次讀 2 byte 約 75 µs；實測約 9700 筆/秒</td><td>AS5600：開機以阻塞方式讀設定與 ANGLE（同時把位址指標指到 0x0E），之後每次 ADC 中斷在 I2C 空閒時以 <code>HAL_I2C_Master_Receive_DMA</code> 讀 2 byte（不必重寫位址）</td></tr>
 <tr><td><strong>I2C1</strong></td><td>APB1</td><td>100 kHz，7-bit，阻塞式，逾時 10 ms</td><td>約 90 µs/byte</td><td>M24C64、<code>I2C_SCAN</code></td></tr>
 <tr><td><strong>USART1</strong></td><td>APB2</td><td>115200 8N1；TX DMA；<strong>RX 改用中斷</strong>，每次收 1 byte（同後代）</td><td>約 11.5 kB/s</td><td>文字指令與回應、5 ms 數據行、<code>LOG</code> 二進位資料</td></tr>
-<tr><td><strong>CAN</strong></td><td>APB1 (36 MHz)</td><td>沒有更動：Prescaler 6，BS1 = 3 tq，BS2 = 2 tq，SJW 1；Normal mode；AutoRetransmission / AutoBusOff / AutoWakeUp 皆關閉；Filter 全收 → FIFO0；RX FIFO0 中斷</td><td>1 Mbit/s，取樣點 66.7 %</td><td>第 10 節</td></tr>
+<tr><td><strong>CAN</strong></td><td>APB1 (36 MHz)</td><td>沒有更動：Prescaler 6，BS1 = 3 tq，BS2 = 2 tq，SJW 1；Normal mode；AutoRetransmission / AutoWakeUp 關閉；AutoBusOff 開啟（2026-10-15：關閉時 bus-off 後要重新上電才會回到匯流排，平衡車實際遇到）；Filter 全收 → FIFO0；RX FIFO0 中斷</td><td>1 Mbit/s，取樣點 66.7 %</td><td>第 10 節</td></tr>
 </table></div>
 
 <h3>電流換算（定點數）</h3>
@@ -352,11 +353,12 @@ svg .ar{fill:var(--muted)}
 <h3>控制模式與輸出狀態</h3>
 <div class="tbl"><table>
 <tr><th>指令</th><th>行為</th></tr>
-<tr><td><code>SET MODE 0</code>（速度）</td><td>速度 PI → Iq 命令。目標 <code>SET SPEED</code>（圈/秒），經目標權重 <code>VELB</code> 的前置濾波（同後代）。開機預設 0.1 圈/秒</td></tr>
+<tr><td><code>SET MODE 0</code>（速度）</td><td>速度 PI → Iq 命令。目標 <code>SET SPEED</code>（圈/秒），經目標權重 <code>VELB</code> 的前置濾波（同後代）。從其他模式切過來時目標歸 0</td></tr>
+<tr><td><code>SET MODE 5</code>（力矩，<strong>開機預設</strong>）</td><td>這一代才有（後代 MODE 2 ~ 4 是棘輪 / 限位 / 無摩擦，沒有力矩模式）。<code>IQREF</code>（A）直接當 Iq 命令，不經過速度環，限幅 ±<code>VEL.LIMIT</code>（預設 1 A）。開機 <code>IQREF</code> = 0。<code>SET IQREF x</code> 在其他模式下會自動切過來（同 <code>ANGLE</code>）；<code>SET MODE 5</code> 進入時 <code>IQREF</code> 歸 0。給平衡車用，CAN 命令見 10.2。<span class="tag t-warn">注意</span> 空載時沒有轉速限制，0.03 A 約 1 秒就到 7 圈/秒</td></tr>
 <tr><td><code>SET MODE 1</code>，<code>POSTYPE 0</code>（串級，預設）</td><td>同後代：位置 P（度 → 圈/秒，限幅 <code>POS.LIMIT</code>）→ 速度 PI → Iq PI。位置環每 <code>POSDIV</code> 次 FOC 中斷算一次（以 4 為單位進位）。沒有後代的軌跡規劃（<code>PLAN.*</code>），等同後代 <code>PLAN.MODE 0</code>（只限速）</td></tr>
 <tr><td><code>SET MODE 1</code>，<code>POSTYPE 1</code>（MIT）</td><td>舊程式的做法：<code>Iq* = MIT.KP × 誤差(度) − MIT.KD × 速度(圈/秒)</code>，限幅 <code>VEL.LIMIT</code>，不經過速度環。誤差以多圈位置相減，沒有舊程式的折回錯誤（問題 #6）</td></tr>
 <tr><td><code>SET ANGLE</code> / <code>SET MOVE</code></td><td>絕對 / 相對的位置目標（度，多圈）。速度模式下收到時自動切到位置模式</td></tr>
-<tr><td><code>STOP</code> / <code>BRAKE</code> / <code>RUN</code></td><td>同後代：滑行（三相高阻）/ 煞車（下橋全開）/ 恢復輸出（速度目標歸 0、位置目標設為目前位置）。停止期間中斷繼續量測角度、速度與電流</td></tr>
+<tr><td><code>STOP</code> / <code>BRAKE</code> / <code>RUN</code></td><td>同後代：滑行（三相高阻）/ 煞車（下橋全開）/ 恢復輸出（速度目標歸 0、位置目標設為目前位置；<code>IQREF</code> 也歸 0，但由 CAN 力矩命令觸發的 RUN 沿用收到的值）。停止期間中斷繼續量測角度、速度與電流</td></tr>
 <tr><td>角度逾時</td><td>5 ms 沒有新的 AS5600 讀值時，中斷自己關閉輸出（滑行），回 <code>[ANG] ERR TIMEOUT</code>、<code>[OUT] COAST</code>，要 <code>RUN</code> 才恢復。主迴圈發現 20 ms 沒有新讀值時重新初始化 I2C2（回 <code>[ANG] I2C RESET</code>）</td></tr>
 </table></div>
 <p>後代的 <code>MODE 2</code>（棘輪）、<code>MODE 3</code>（限位）、<code>MODE 4</code>（無摩擦）這一代還沒有，回 <code>[PARAM] ERR PARAM</code>（第 14.4 節階段 5）。</p>
@@ -453,33 +455,64 @@ svg .ar{fill:var(--muted)}
   <li><strong>電流偏置</strong>：256 筆平均，每筆間隔 1 ms；<code>Ctrl_Sync()</code>。</li>
   <li>PWM_ACTIVE = High；<strong>ALIGN</strong>（約 0.55 秒），回 <code>[ZERO] ALIGN</code>（讀不到角度時是 <code>[ZERO] ERR ANG</code>）。</li>
   <li>CAN filter、啟動 CAN、RX FIFO0 中斷，印 <code>HAL_CAN1_Star1 is HAL_OK</code>（沿用舊程式）。</li>
-  <li><code>FocDo = 1</code>，以 0.1 圈/秒 開始轉；啟動 USART1 RX 中斷，進入主迴圈。</li>
+  <li><code>FocDo = 1</code>，力矩模式（<code>MODE 5</code>）、<code>IQREF</code> = 0（2026-10-15 依作者決定由速度模式 0.1 圈/秒 改過來）；啟動 USART1 RX 中斷，進入主迴圈。</li>
 </ol>
 <p>從上電到閉環約 1.1 秒（同後代）。舊程式開機時讀 EEPROM 的 <code>angShift</code> 與 <code>exf_map</code>，這一版都不讀（第 11 節）。</p>
 
 <!-- ============================================================ -->
 <h2 id="can">10. CAN Bus 指令</h2>
-<p><span class="tag t-ok">已確認</span> 這一輪依作者的決定<strong>沒有更動 CAN</strong>（設定、filter、<code>HAL_CAN_RxFifo0MsgPendingCallback()</code> 的處理都照舊），只把變數名稱換成新程式的。行為：</p>
+<p><span class="tag t-ok">已確認</span> 指令的處理（<code>HAL_CAN_RxFifo0MsgPendingCallback()</code>）照舊，只把變數名稱換成新程式的。2026-10-15 依作者的決定加上 <strong>CAN ID</strong>（只收自己 ID 的訊框）與<strong>定時狀態回報</strong>，見 10.1。指令行為：</p>
 <div class="tbl"><table>
 <tr><th class="num">byte0</th><th>名稱</th><th>byte1</th><th>行為</th><th>狀態</th></tr>
 <tr><td class="num">0</td><td><code>STOP_MOTOR</code></td><td>不看</td><td><code>deviceMode = Stop</code>，<code>deviceMode</code> 沒有其他地方使用，沒有效果（同舊程式）</td><td><span class="tag t-bad">無效</span></td></tr>
 <tr><td class="num">1</td><td><code>SET_SPEED</code></td><td>只處理 0</td><td><code>speed_Target</code> = float（圈/秒）。只在速度模式（<code>MODE 0</code>）下有作用；位置模式下改了也不會被使用</td><td><span class="tag t-ok">可用</span></td></tr>
 <tr><td class="num">2</td><td><code>SET_POSITION</code></td><td>—</td><td>沒有實作</td><td><span class="tag t-dim">未實作</span></td></tr>
-<tr><td class="num">3</td><td><code>SET_IQ</code></td><td>—</td><td>沒有實作</td><td><span class="tag t-dim">未實作</span></td></tr>
+<tr><td class="num">3</td><td><code>SET_IQ</code></td><td>只處理 0</td><td>2026-10-15 新增，給平衡車用（10.2）：<code>IQREF</code> = float（A），需 DLC ≥ 6</td><td><span class="tag t-ok">可用</span></td></tr>
 <tr><td class="num">4</td><td><code>SET_ANG_SHIFT</code></td><td>不看</td><td><code>deviceMode = SetAngShift</code>，沒有效果（同舊程式）</td><td><span class="tag t-bad">無效</span></td></tr>
 </table></div>
-<p>資料格式：byte0 指令、byte1 類型、byte2 ~ 5 float（LE）。filter 全收、不檢查 DLC、沒有回傳；<code>HAL_CAN_GetRxMessage</code> 失敗時進 <code>Error_Handler()</code>（現在會先關閉輸出，問題 #3）。擴充提案見 14.5（階段 3）。</p>
+<p>資料格式：byte0 指令、byte1 類型、byte2 ~ 5 float（LE）。不檢查 DLC、RTR；<code>HAL_CAN_GetRxMessage</code> 失敗時進 <code>Error_Handler()</code>（現在會先關閉輸出，問題 #3）。擴充提案見 14.5（階段 3）。</p>
+
+<h3>10.1 CAN ID 與狀態回報</h3>
+<div class="tbl"><table>
+<tr><th>項目</th><th>內容</th></tr>
+<tr><td>CAN ID</td><td>11-bit 標準 ID，範圍 1 ~ <code>0x7EF</code>（回報 ID 要 +0x10），預設 <code>0x110</code>（平衡車的左輪；右輪要用 <code>SET CANID 0x111</code> 改）。filter（bank 0，32 bit 遮罩模式）只收標準 ID == CAN ID 的訊框；擴充 ID 不收</td></tr>
+<tr><td>回報</td><td>用 <strong>CAN ID + 0x10</strong>（左 <code>0x120</code>、右 <code>0x121</code>；2026-10-15 改，原本與命令共用同一個 ID）、DLC 8，每 <code>CANRPT</code> ms 送一筆，不管有沒有收到指令、輸出是否開著。內容（LE）配合平衡車：byte0 ~ 3 速度 float（圈/秒，同 <code>ang_speed</code>）、byte4 ~ 5 單圈角度 int16（0.01 度，多圈位置折回 −180.00 ~ +179.99）、byte6 ~ 7 Iq int16（mA，量測值，超出時限幅）</td></tr>
+<tr><td>回報週期 <code>CANRPT</code></td><td>0 ~ 1000 ms，0 = 不回報，預設 5 ms（同舊程式主迴圈的節奏）</td></tr>
+<tr><td>發送時機</td><td><code>SysTick_Handler</code>（1 ms，最低優先權）呼叫 <code>Can_Tick()</code>。三個發送郵箱都滿時這一筆跳過。<code>AutoRetransmission</code> 是 DISABLE，沒有節點 ACK 時每筆只送一次，不會塞住</td></tr>
+<tr><td>設定</td><td><code>SET CANID n</code>、<code>SET CANRPT ms</code>（整數，<code>0x</code> 開頭的十六進位也可以）：<strong>立即生效</strong>（CANID 會馬上重設 filter）並寫進 EEPROM <code>0x0020</code>（第 11 節）。寫入失敗時 RAM 內的值仍然生效，另外回 <code>[EE] ERR WRITE</code>。<code>GET CANID</code> / <code>GET CANRPT</code> 回十進位</td></tr>
+<tr><td>開機</td><td>從 EEPROM 讀回，回 <code>[CAN] ID=… RPT=… EEPROM</code>；讀不到、格式不符或超出範圍時用預設值，回 <code>[CAN] ID=272 RPT=5 DEFAULT</code>（ID 以十進位顯示，272 = <code>0x110</code>）</td></tr>
+<tr><td>motor_ui</td><td>「校正 / EEPROM」分頁的「CAN」框：CAN ID（十六進位顯示）與回報週期，各自按「套用」送出 <code>SET</code>；連線時自動 <code>GET</code>。後代 F446 沒有這個功能，連到 F446 時停用（<code>board.py</code> 的 <code>F_CANID</code>）</td></tr>
+</table></div>
+<p><span class="tag t-ok">已確認</span> 2026-10-15 實機（SWD）：SET / GET、範圍檢查、重開機後從 EEPROM 讀回都正常；filter 暫存器 F0R1 = <code>0x00A00000</code>（ID 5）、F0R2 = <code>0xFFE00004</code>；發送郵箱內最後一筆的 ID、速度、角度、Iq 與當下的值相符（<code>IQREF</code> ±0.03 A 時 Iq 回報 ±26 ~ 31 mA，速度同號）。<span class="tag t-dim">未確認</span> 匯流排上沒有其他節點 ACK（TSR 的 TXOK0 = 0，ESR 的 LEC = 位元錯誤），和平衡車實際連線要再測。</p>
+
+<h3>10.2 平衡車（ESP32S3_MCP2515_CANBbus_Test）</h3>
+<p>依作者決定優先配合平衡車、不改平衡車的程式（<code>src/foc_motor_ctrl.cpp</code>）。對照：</p>
+<div class="tbl"><table>
+<tr><th>項目</th><th>平衡車</th><th>這一版韌體</th></tr>
+<tr><td>ID</td><td>命令：左 <code>0x110</code>、右 <code>0x111</code>；回報：左 <code>0x120</code>、右 <code>0x121</code></td><td>預設 <code>0x110</code>，右輪用 <code>SET CANID 0x111</code>（存 EEPROM）</td></tr>
+<tr><td>命令</td><td>DLC 6：byte0 = 3、byte1 = 0、byte2 ~ 5 float，每圈送一次</td><td><code>SET_IQ</code>：float 當 <code>IQREF</code>（A），限幅 ±<code>VEL.LIMIT</code>。不在 <code>MODE 5</code> 時自動切過去；輸出關閉（<code>STOP</code> / <code>BRAKE</code> / 角度逾時）時自動 <code>RUN</code>。這兩件事在主迴圈做（<code>Can_Process()</code>），最慢約 5 ms；電流環測試中不切換</td></tr>
+<tr><td>逾時</td><td>—</td><td>CAN 力矩命令超過 100 ms 沒更新，<code>IQREF</code> 歸 0（<code>Can_Tick()</code>，1 ms 檢查一次）。文字指令 <code>SET IQREF</code> 設的值不會逾時</td></tr>
+<tr><td>回報</td><td>byte0 ~ 3 float 當輪速（圈/秒），其他 byte 不看</td><td>byte0 ~ 3 速度 float，每 5 ms 一筆（10.1）</td></tr>
+<tr><td>方向</td><td>兩輪反向安裝，左右力矩與輪速由平衡車自己反號</td><td>正的 <code>IQREF</code> → 正的速度（從軸端看逆時針，同後代）</td></tr>
+</table></div>
+<ul>
+  <li><span class="tag t-ok">已確認</span> 2026-10-15 以暫時的 loopback 測試版（測完已移除）：速度模式 + <code>STOP</code> 時收到 <code>SET_IQ 0.03</code> → 自動回 <code>[PARAM] MODE=5</code>、<code>[OUT] RUN</code>，<code>IQREF</code> = 0.03；命令停止後 <code>IQREF</code> 回 0。</li>
+  <li><span class="tag t-warn">注意</span> 平衡車持續送命令時，<code>STOP</code> 會在下一筆命令立刻被 <code>RUN</code> 回來；要停馬達得先停平衡車。</li>
+  <li><span class="tag t-ok">已處理</span> 原本命令與回報共用同一個 ID，兩邊同時開始送時仲裁不分勝負、在資料欄位出錯。2026-10-15 起回報改用 CAN ID + 0x10，並開啟 <code>AutoBusOff</code>。</li>
+  <li>開機仍做 <code>ALIGN</code>（轉子被拉到電氣零點約 0.5 秒），作者確認可以接受。</li>
+</ul>
 
 <!-- ============================================================ -->
 <h2 id="eeprom">11. EEPROM</h2>
-<p>這一版的韌體<strong>開機不讀、也不寫</strong> EEPROM：電氣零點改成每次開機對齊；齒槽補償前饋 <code>exf_map</code> 是在電流回授無效時量的（問題 #1），先停用（作者 2026-10-14 決定）。板上 EEPROM 的內容沒有被動過。</p>
+<p>這一版的韌體在 EEPROM 只讀寫 CAN 設定（<code>0x0020</code>，第 10.1 節）：電氣零點改成每次開機對齊；齒槽補償前饋 <code>exf_map</code> 是在電流回授無效時量的（問題 #1），先停用（作者 2026-10-14 決定）。舊程式的內容沒有被動過。</p>
 <div class="tbl"><table>
 <tr><th>位址</th><th>舊程式的內容</th><th>這一版</th></tr>
 <tr><td><code>0x0000</code> ~ <code>0x0003</code></td><td>電氣零點 <code>angShift</code>（float，度）</td><td>不使用</td></tr>
+<tr><td><code>0x0020</code> ~ <code>0x0027</code></td><td>（沒有使用）</td><td>CAN 設定 <code>CanCfg</code>，uint16 × 4（LE）：magic <code>0xCA1E</code>（<code>0xCA1D</code> 是回報格式改版前的，讀到時用預設值）、CAN ID、回報週期（ms）、檢查碼 <code>~(ID ^ 週期)</code>。<code>SET CANID</code> / <code>SET CANRPT</code> 時寫入，開機讀出。<strong>注意</strong>：後代的參數區塊從 <code>0x0000</code> 起佔 248 byte，階段 4 照搬時會蓋到這裡，要先把其中一個搬家（作者 2026-10-15 選定 <code>0x0020</code>）</td></tr>
 <tr><td><code>0x0040</code> 起，每 64 byte 存 32 byte，共 45 格</td><td>齒槽補償表 <code>exf_map[360]</code>（float，A，索引 = 機械角整數度）</td><td>程式保留，<code>main.c</code> 的 <code>EXF_MAP_ENABLE</code> 設成 1 才會開機讀出、在速度模式 |SPEED| ≤ 0.5 時加到 Iq 命令。索引改成 AS5600 的絕對角度（舊表是相對於舊的 <code>angShift</code>），所以要重新量測</td></tr>
 </table></div>
 <ul>
-  <li>驅動是 <code>Core/Src/M24C64.c</code>（舊的 <code>M24C64_ctrl.h</code> 搬過來，逾時由 <code>HAL_MAX_DELAY</code> 改成 10 ms）。</li>
+  <li>驅動是 <code>Core/Src/M24C64.c</code>（舊的 <code>M24C64_ctrl.h</code> 搬過來，逾時由 <code>HAL_MAX_DELAY</code> 改成 10 ms）。另加以 byte 位址讀寫的 <code>M24C64_Read()</code> / <code>M24C64_Write()</code>，寫入不能跨 32 byte 頁邊界。</li>
   <li>後代的參數區塊格式（magic、版本、CRC）與 <code>EE_SAVE</code> / <code>EE_LOAD</code> / <code>EE_ERASE</code> / <code>ZERO_CLR</code> / <code>EE_RD</code> / <code>EE_WR</code> 是階段 4，現在回 <code>[CMD] UNKNOWN</code>。WC 腳仍一直保持 Low。</li>
   <li>專案根目錄的 <code>齒槽測試.csv</code> 是舊程式兩次齒槽量測的輸出（角度, Iq）。</li>
 </ul>
@@ -521,7 +554,7 @@ svg .ar{fill:var(--muted)}
 <tr><td>7</td><td><code>micros()</code> 每 65 ms 回繞</td><td><span class="tag t-ok">已修</span> 開啟 TIM2 中斷（優先權最高），<code>micros()</code> 內關中斷讀取並補上還沒處理的溢位</td></tr>
 <tr><td>8</td><td>FOC 在主迴圈、頻率低</td><td><span class="tag t-ok">已修</span> FOC 在 ADC 中斷內，電流環 20 kHz（第 8 節）</td></tr>
 <tr><td>9</td><td>I2C 阻塞、無逾時</td><td><span class="tag t-ok">已修</span> 角度以 DMA 背景讀取；阻塞讀寫的逾時 5 ms（AS5600）/ 10 ms（EEPROM）；卡住時清除匯流排並重新初始化</td></tr>
-<tr><td>10</td><td>CAN 不過濾 ID、不檢查 DLC、不重送</td><td><span class="tag t-dim">未處理</span> 階段 3</td></tr>
+<tr><td>10</td><td>CAN 不過濾 ID、不檢查 DLC、不重送</td><td><span class="tag t-warn">部分</span> 2026-10-15 加上 ID 過濾（第 10.1 節）；DLC 檢查等其餘部分是階段 3</td></tr>
 <tr><td>11</td><td>電流偏置只取一筆</td><td><span class="tag t-ok">已修</span> 256 筆平均（同後代）</td></tr>
 <tr><td>12</td><td>電流低通沒有作用</td><td><span class="tag t-ok">已修</span> 改成後代的 <code>IPHLPF</code> / <code>IDQLPF</code>，以固定的 FOC 週期計算，預設關閉</td></tr>
 <tr><td>13</td><td>速度環依目標換段</td><td><span class="tag t-ok">已修</span> 改成單一一組（作者決定），參數見第 7 節</td></tr>
@@ -674,7 +707,7 @@ svg .ar{fill:var(--muted)}
   <li><span class="tag t-ok">已決定</span> duty 改成完整的 0 ~ 100 %。</li>
   <li><span class="tag t-ok">已決定</span> 修改 .ioc 後以 CubeMX 重新產生程式碼；程式結構跟後代一樣（使用者程式在 <code>main.c</code>，驅動各自一個檔案）。</li>
   <li><span class="tag t-ok">已決定</span> 開機以 <code>ALIGN</code> 取得電氣零點，不讀 EEPROM；<code>exf_map</code> 停用。</li>
-  <li><span class="tag t-ok">已決定</span> 速度環改成單一一組參數；開機預設與後代相同（速度模式 0.1 圈/秒）。</li>
+  <li><span class="tag t-ok">已決定</span> 速度環改成單一一組參數；開機預設與後代相同（速度模式 0.1 圈/秒）。2026-10-15 改成力矩模式 <code>IQREF</code> = 0（配合平衡車，10.2）。</li>
   <li><span class="tag t-ok">已決定</span> 位置模式：<code>MODE 1</code> 內以 <code>SET POSTYPE</code> 切換串級（0）與 MIT（1），參數 <code>MIT.KP</code> / <code>MIT.KD</code>。</li>
   <li><span class="tag t-ok">已決定</span> 電流量 CH1 + CH2（同後代），CH3 由 KCL 推算。</li>
   <li><span class="tag t-ok">已決定</span> 加入的調校參數：<code>IDLOOP</code>、<code>BIAS1/2</code>、<code>VELAW</code> / <code>VELB</code> / <code>VELTF</code>、<code>IPHLPF</code> / <code>IPHTF</code> / <code>IDQLPF</code> / <code>IDQTF</code>、<code>POSZERO</code>、<code>I2C_SCAN</code>。</li>
@@ -716,16 +749,18 @@ uv run vel_capture.py steady --speeds 0.1,-0.1,1                 # 速度環 (SW
 <tr><td><code>STOP</code>、<code>BRAKE</code>、<code>RUN</code>、<code>ALIGN</code>、<code>POSZERO</code></td><td>同後代。<code>ALIGN</code> 失敗時回 <code>[ALIGN] ERR ANG</code>（後代是 <code>ERR SPI</code>）</td></tr>
 <tr><td><code>LOG</code>、<code>LOGQ</code>、<code>LOGSEL</code>、<code>LOGC</code>、<code>LOGS</code>、<code>LOGX</code></td><td>同後代，欄位編號、大小、比例相同。筆數 = 8192 ÷ 每筆 byte 數（預設 585 筆）；FOC 20 kHz，所以 div = 1 時 0.029 秒、div = 40 時 1.17 秒。<code>[LOG] SEL</code> 與 <code>[LOG] BEGIN</code> 的最後多一個 <code>foc_hz=</code>（後代也加了）。<code>enc</code> 欄位是 AS5600 讀值 × 16</td></tr>
 <tr><td><code>SET</code> / <code>GET</code> 的 PID（<code>ID</code>、<code>IQ</code>、<code>VEL</code>、<code>POS</code>）</td><td>同後代。電流環（<code>ID</code> / <code>IQ</code>）的 <code>D</code>、<code>RAMP</code> 可以設，但這一代的定點電流環不使用</td></tr>
-<tr><td><code>SPEED</code>、<code>MODE</code>、<code>ANGLE</code>、<code>MOVE</code>、<code>POSNOW</code>、<code>POSDIV</code></td><td>同後代，但 <code>MODE</code> 只接受 0、1；<code>POSDIV</code> 以 4 為單位進位</td></tr>
+<tr><td><code>SPEED</code>、<code>MODE</code>、<code>ANGLE</code>、<code>MOVE</code>、<code>POSNOW</code>、<code>POSDIV</code></td><td>同後代，但 <code>MODE</code> 只接受 0、1、5（5 = 力矩，這一代才有，開機預設）；<code>POSDIV</code> 以 4 為單位進位</td></tr>
+<tr><td><code>IQREF</code></td><td>這一代才有（第 6 節、10.2）。力矩模式的 Iq 命令（A）；其他模式下 <code>SET IQREF</code> 自動切到 <code>MODE 5</code></td></tr>
 <tr><td><code>POSTYPE</code>、<code>MIT.KP</code>、<code>MIT.KD</code>、<code>GET MIT</code></td><td>這一代才有（第 6 節）。<code>GET MIT</code> 回 <code>[PARAM] MIT KP=… KD=…</code></td></tr>
 <tr><td><code>IDLOOP</code>、<code>BIAS1</code> / <code>BIAS2</code>、<code>VELAW</code>、<code>VELB</code>、<code>IPHLPF</code> / <code>IPHTF</code>、<code>IDQLPF</code> / <code>IDQTF</code></td><td>同後代</td></tr>
 <tr><td><code>VELTF</code></td><td>範圍 0 ~ 50 ms（後代 0 ~ 5 ms），預設 0.5 ms</td></tr>
+<tr><td><code>CANID</code>、<code>CANRPT</code></td><td>這一代才有（第 10.1 節）。<code>SET</code> 立即生效並寫進 EEPROM</td></tr>
 <tr><td><code>I2C_SCAN</code></td><td>掃 I2C1（EEPROM 那一條，找得到 <code>0x50</code>）；I2C2 正在連續讀 AS5600，不掃</td></tr>
 <tr><td><code>ITEST</code>、<code>IT.QA</code> / <code>IT.QB</code> / <code>IT.DA</code> / <code>IT.DB</code>、<code>GET ITEST</code></td><td>同後代（準位上限 1 A / 3 V、過電流 2 A、轉速 40 圈/秒 時結束）。half 以 FOC 中斷計，這一代是 20 kHz，所以上限 40000 是 2 秒（後代 1 秒）。準位由主迴圈換成定點數，測試中 <code>SET</code> 改準位最慢 5 ms 後生效。另外測試中 <code>ALIGN</code> 回 <code>[ALIGN] BUSY</code></td></tr>
 <tr><td><code>MT6835_CAL</code>、<code>EE_SAVE</code>、<code>EE_LOAD</code>、<code>EE_ERASE</code>、<code>ZERO_CLR</code>、<code>EE_RD</code>、<code>EE_WR</code>、<code>LIM_HERE</code>、<code>LIM_SPAN</code></td><td>沒有，回 <code>[CMD] UNKNOWN</code></td></tr>
 <tr><td><code>RAT.*</code>、<code>LIM.*</code>、<code>NOF.*</code>、<code>PLAN.*</code>、<code>ENCC.*</code></td><td>沒有，回 <code>[PARAM] ERR PARAM</code></td></tr>
 <tr><td><code>swd_cmd</code>（SWD 寫入編號）</td><td>只有 6（<code>ALIGN</code>）；其他編號回 <code>[CMD] UNKNOWN</code></td></tr>
-<tr><td>開機訊息</td><td><code>[AS5600] STATUS=… AGC=… CONF=… ZPOS=… MPOS=…</code>、<code>[ZERO] ALIGN</code>、<code>HAL_CAN1_Star1 is HAL_OK</code></td></tr>
+<tr><td>開機訊息</td><td><code>[AS5600] STATUS=… AGC=… CONF=… ZPOS=… MPOS=…</code>、<code>[ZERO] ALIGN</code>、<code>[CAN] ID=… RPT=… EEPROM|DEFAULT</code>、<code>HAL_CAN1_Star1 is HAL_OK</code></td></tr>
 <tr><td>故障訊息</td><td><code>[ANG] ERR TIMEOUT</code> + <code>[OUT] COAST</code>（角度逾時，關閉輸出）；<code>[ANG] I2C RESET</code> / <code>[ANG] ERR I2C</code>（I2C2 重新初始化成功 / 失敗）</td></tr>
 </table></div>
 

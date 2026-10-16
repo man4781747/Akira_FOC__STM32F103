@@ -23,7 +23,8 @@
  *  - FOC：TIM1 CH4 (OC4REF) 經 TRGO 觸發 ADC1 injected 轉換，JEOC 中斷內執行 (Foc_AdcIsr)
  *  - 電流：ADC1 依序轉 CH1 (PB1, IN9)、CH2 (PB0, IN8)，CH3 由 KCL 推算
  *  - 沒有 MT6835 自校正、編碼器補償 (ENCC)、EEPROM 參數區塊、棘輪 / 限位 / 無摩擦 / 軌跡規劃
- *  - CAN 指令沿用舊的處理方式 (HAL_CAN_RxFifo0MsgPendingCallback)
+ *  - CAN 指令沿用舊的處理方式 (HAL_CAN_RxFifo0MsgPendingCallback)；只收 CANID 的訊框，並以同一個 ID 定時回報狀態 (這一代才有)
+ *  - 力矩模式 MODE 5 (這一代才有，開機預設，IQREF = 0)：配合平衡車 ESP32S3_MCP2515_CANBbus_Test 的 CAN SET_IQ 命令
  * 詳見 doc/設計文件.html。
  *
  * 待研究閱讀:
@@ -158,6 +159,9 @@ PIDController PID__position;
 // AS5600 讀值增加的方向和磁場 CH1→CH2→CH3 的旋轉方向相反 (2026-10-14 實測)，所以角度取 zero_raw − 讀值。
 // 這樣正轉 (SET SPEED > 0) 從軸端看是逆時針，與後代相同
 #define ENC_DIR            (-1)
+// 1 = 馬達三條線中有兩條接反 (平衡車，2026-10-15)：以軟體對調兩相，α 不變、β 取負 (Clarke 與 SVPWM 兩處)。
+// 開機 ALIGN 會吸收接反哪兩條造成的 120° 偏移，所以 ENC_DIR 與正轉方向 (從軸端看逆時針) 都不變
+#define PHASE_SWAP         1
 #define POLE_PAIRS         7
 #define ANG_TIMEOUT_US     5000     // 超過這麼久沒有新的角度：關閉輸出 (滑行)，要 RUN 才恢復
 #define ANG_EXTRAP_MAX_US  1000     // 電角度以速度往前外插，最多外插這麼久
@@ -183,7 +187,15 @@ uint32_t ang_stall_seq;
 #define POS_DIV_MAX        1000
 #define MIT_KP_DEFAULT     0.01f   // A/度，舊程式的值
 #define MIT_KD_DEFAULT     0.15f   // A/(圈/秒)，舊程式的值
-volatile uint8_t ctrl_mode = CTRL_MODE_VEL;
+// ---- 力矩模式：MODE 5 (這一代才有，後代 MODE 2 ~ 4 是棘輪 / 限位 / 無摩擦)。Iq 命令 = IQREF (A)，限幅同 VEL.LIMIT。開機預設 ----
+// 平衡車 (ESP32S3_MCP2515_CANBbus_Test) 以 CAN SET_IQ 下命令；CAN 命令超過 TRQ_CAN_TIMEOUT_MS 沒更新時 IQREF 歸零
+#define CTRL_MODE_TRQ      5
+#define TRQ_CAN_TIMEOUT_MS 100
+volatile uint8_t ctrl_mode = CTRL_MODE_TRQ;
+volatile float trq_iq = 0.f;        // IQREF (A)
+volatile uint8_t can_trq_live;      // 1 = IQREF 來自 CAN，逾時會歸零 (SET IQREF 會清成 0)
+volatile uint32_t can_trq_tick;     // 最後一筆 CAN 力矩命令的 HAL_GetTick()
+volatile uint8_t can_trq_req;       // CAN 力矩命令要求切到 MODE 5 / RUN，主迴圈 (Can_Process) 處理
 volatile uint8_t pos_type = POS_TYPE_CASCADE;
 float mit_kp = MIT_KP_DEFAULT;
 float mit_kd = MIT_KD_DEFAULT;
@@ -398,13 +410,36 @@ SwdIf swd_if;
 PIDController * const cfg_pid[CFG_PID_N] = {&PID__current_Id, &PID__current_Iq, &PID__velocity, &PID__position};
 const char * const cfg_pid_name[CFG_PID_N] = {"ID", "IQ", "VEL", "POS"};
 
-// ---- CAN：沿用舊程式 ----
+// ---- CAN：指令處理沿用舊程式，只收 StdId == can_id 的訊框 ----
 enum DeviceMode deviceMode = DeviceMode_Stop;  // CAN 指令會改，但沒有其他地方使用 (同舊程式)
 CAN_TxHeaderTypeDef TxHeader;
 uint8_t TxData[8] = {};
 uint32_t TxMailbox; // 用來儲存發送的郵箱號
 CAN_RxHeaderTypeDef RxHeader;
 uint8_t RxData[8];
+
+// CAN ID (11-bit 標準 ID) 與狀態回報週期，SET CANID / SET CANRPT 立即生效並寫進 EEPROM 0x0020，開機時讀回。
+// 回報訊框用同一個 ID (配合平衡車)，每 can_rpt_ms 由 SysTick (Can_Tick) 送出 8 byte (LE)：
+//   byte0~3 速度 float (圈/秒)、byte4~5 單圈角度 int16 (0.01 度，多圈位置折回 -180 ~ +180)、byte6~7 Iq int16 (mA，限幅)
+#define CAN_ID_DEFAULT   0x110   // 平衡車的左輪；右輪 0x111 用 SET CANID 改
+#define CAN_ID_MAX       0x7FF
+// 回報 ID = 命令 ID + 0x10 (左 0x110 → 0x120、右 0x111 → 0x121)：同一個 ID 只能由一個節點送，避免和平衡車的命令撞在一起
+#define CAN_RPT_ID_OFFSET 0x10
+#define CAN_CMD_ID_MAX   (CAN_ID_MAX - CAN_RPT_ID_OFFSET)  // 命令 ID 上限，回報 ID 才不會超過 11 bit
+#define CAN_RPT_DEFAULT  5       // ms，0 = 不回報
+#define CAN_RPT_MAX      1000
+#define CAN_EE_MAGIC     0xCA1E  // 0xCA1D 是回報格式改版前的設定，讀到時改用預設值
+typedef struct {
+  uint16_t magic;
+  uint16_t id;
+  uint16_t rpt_ms;
+  uint16_t check;   // ~(id ^ rpt_ms)
+} CanCfg;
+_Static_assert(sizeof(CanCfg) == 8, "CanCfg 的大小變了，doc/設計文件.html 第 11 節要同步");
+volatile uint16_t can_id = CAN_ID_DEFAULT;
+volatile uint16_t can_rpt_ms = CAN_RPT_DEFAULT;
+static uint16_t can_rpt_cnt;
+static volatile uint8_t can_started;   // HAL_CAN_Start 成功之後才回報
 
 void Cmd_Process(void);
 void Log_Process(void);
@@ -416,6 +451,7 @@ static void Cmd_Exec(char *cmd_line);
 static uint8_t Align_Do(void);
 static void As5600_Report(void);
 static void CAN_Filter_Config(void);
+static void Can_Process(void);
 static void Ctrl_Sync(void);
 
 // 以 double 換算：圈數多時 float 的解析度不夠
@@ -447,16 +483,18 @@ static inline void Pwm_Off(void)
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+// 只收標準 ID == can_id 的訊框 (RTR 不看，同舊程式)。執行中也可以重設
 static void CAN_Filter_Config(void)
 {
   CAN_FilterTypeDef sFilterConfig;
   sFilterConfig.FilterBank = 0;      //筛选器编号, CAN1是0-13, CAN2是14-27
   sFilterConfig.FilterMode = CAN_FILTERMODE_IDMASK; //采用掩码模式
   sFilterConfig.FilterScale = CAN_FILTERSCALE_32BIT; //设置筛选器的尺度, 采用32位
-  sFilterConfig.FilterIdHigh = 0X0000;    //过滤器ID高16位,即CAN_FxR1寄存器的高16位
-  sFilterConfig.FilterIdLow = 0X0000;     //过滤器ID低16位,即CAN_FxR1寄存器的低16位
-  sFilterConfig.FilterMaskIdHigh = 0X0000;   //过滤器掩码高16位,即CAN_FxR2寄存器的高16位
-  sFilterConfig.FilterMaskIdLow = 0X0000;    //过滤器掩码低16位,即CAN_FxR2寄存器的低16位
+  // 32 bit 格式：STID 在 bit 31~21、IDE 在 bit 2、RTR 在 bit 1
+  sFilterConfig.FilterIdHigh = (uint32_t)can_id << 5;
+  sFilterConfig.FilterIdLow = 0x0000;     // IDE = 0 (標準 ID)
+  sFilterConfig.FilterMaskIdHigh = CAN_ID_MAX << 5;
+  sFilterConfig.FilterMaskIdLow = CAN_ID_EXT;  // 比對 IDE，擴充 ID 的訊框不收
   sFilterConfig.FilterFIFOAssignment = CAN_RX_FIFO0; //设置经过筛选后数据存储到哪个接收FIFO
   sFilterConfig.FilterActivation = ENABLE;   //是否使能本筛选器
   sFilterConfig.SlaveStartFilterBank = 14;   //指定为CAN1分配多少个滤波器组
@@ -464,6 +502,62 @@ static void CAN_Filter_Config(void)
   {
     Error_Handler();
   }
+}
+
+// 開機時從 EEPROM 讀回 CAN ID 與回報週期；讀不到、格式不符或超出範圍就用預設值。回傳 1 = 用了 EEPROM 的值
+static uint8_t Can_Load(void)
+{
+  CanCfg c;
+  if (M24C64_Read(EE_ADDR_CAN, (uint8_t *)&c, sizeof(c)) != HAL_OK || c.magic != CAN_EE_MAGIC
+      || c.check != (uint16_t)~(c.id ^ c.rpt_ms) || c.id < 1 || c.id > CAN_CMD_ID_MAX || c.rpt_ms > CAN_RPT_MAX) {
+    return 0;
+  }
+  can_id = c.id;
+  can_rpt_ms = c.rpt_ms;
+  return 1;
+}
+
+static HAL_StatusTypeDef Can_Save(void)
+{
+  CanCfg c = {CAN_EE_MAGIC, can_id, can_rpt_ms, (uint16_t)~(can_id ^ can_rpt_ms)};
+  return M24C64_Write(EE_ADDR_CAN, (const uint8_t *)&c, sizeof(c));
+}
+
+static inline int16_t Sat_I16(float v)
+{
+  if (!(v > -32768.f)) return -32768;  // 也擋掉 NaN
+  if (v > 32767.f) return 32767;
+  return (int16_t)v;
+}
+
+// SysTick (1 ms，最低優先權) 呼叫：CAN 力矩命令逾時歸零；每 can_rpt_ms 送一筆狀態回報。
+// 三個發送郵箱都滿 (沒有其他節點 ACK) 時這一筆跳過
+void Can_Tick(void)
+{
+  __disable_irq();  // CAN 接收中斷 (優先權較高) 可能剛好送來新命令
+  if (can_trq_live && HAL_GetTick() - can_trq_tick > TRQ_CAN_TIMEOUT_MS) {
+    trq_iq = 0.f;
+    can_trq_live = 0;
+  }
+  __enable_irq();
+  uint16_t rpt = can_rpt_ms;
+  if (!can_started || rpt == 0 || ++can_rpt_cnt < rpt) {
+    return;
+  }
+  can_rpt_cnt = 0;
+  if (HAL_CAN_GetTxMailboxesFreeLevel(&hcan) == 0) {
+    return;
+  }
+  float spd = ang_speed;
+  // 單圈角度：count 的低 16 bit 當 int16 (-32768 ~ 32767)，× 36000 / 65536 = × 1125 / 2048 (0.01 度)
+  int16_t ang = (int16_t)(((int32_t)(int16_t)(uint16_t)pos_count * 1125) >> 11);
+  int16_t iq = Sat_I16((float)iq_fix * (I_UNIT_A * 1000.f));
+  uint8_t d[8];
+  memcpy(&d[0], &spd, 4);
+  memcpy(&d[4], &ang, 2);
+  memcpy(&d[6], &iq, 2);
+  TxHeader.StdId = can_id + CAN_RPT_ID_OFFSET;
+  HAL_CAN_AddTxMessage(&hcan, &TxHeader, d, &TxMailbox);
 }
 /* USER CODE END 0 */
 
@@ -610,6 +704,10 @@ int main(void)
   // 電氣零點：每次開機以 SetAng(0) 對齊
   Cmd_Reply(Align_Do() ? "[ZERO] ALIGN" : "[ZERO] ERR ANG");
 
+  char can_msg[48];
+  uint8_t can_ee = Can_Load();
+  snprintf(can_msg, sizeof(can_msg), "[CAN] ID=%u RPT=%u %s", can_id, can_rpt_ms, can_ee ? "EEPROM" : "DEFAULT");
+  Cmd_Reply(can_msg);
   CAN_Filter_Config();
 	if (HAL_CAN_Start(&hcan) != HAL_OK)
   {
@@ -622,10 +720,12 @@ int main(void)
   {
     Error_Handler();
   }
-  TxHeader.StdId = 0x123; // 你的CAN ID (標準ID)
+  TxHeader.StdId = can_id + CAN_RPT_ID_OFFSET; // 回報 ID = 命令 ID + 0x10
   TxHeader.RTR = CAN_RTR_DATA; // 數據幀
   TxHeader.IDE = CAN_ID_STD; // 標準ID
   TxHeader.DLC = 8; // 數據長度，最多8個位元組
+  TxHeader.TransmitGlobalTime = DISABLE;
+  can_started = 1;
   deviceMode = DeviceMode_SpeedMode;
 
   ang_stall_tick = HAL_GetTick();
@@ -642,6 +742,7 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     Cmd_Process();
+    Can_Process();
     Log_Process();
     Swd_Update();
     Fault_Process();
@@ -795,7 +896,7 @@ static void MX_CAN_Init(void)
   hcan.Init.TimeSeg1 = CAN_BS1_3TQ;
   hcan.Init.TimeSeg2 = CAN_BS2_2TQ;
   hcan.Init.TimeTriggeredMode = DISABLE;
-  hcan.Init.AutoBusOff = DISABLE;
+  hcan.Init.AutoBusOff = ENABLE;  // bus-off 後由硬體自動恢復 (關閉時要重新上電才會回到匯流排)
   hcan.Init.AutoWakeUp = DISABLE;
   hcan.Init.AutoRetransmission = DISABLE;
   hcan.Init.ReceiveFifoLocked = DISABLE;
@@ -1415,33 +1516,66 @@ static void Pos_CmdZero(void)
   Cmd_Reply(msg);
 }
 
+// 切換控制模式 (0 速度、1 位置、5 力矩)。電流環測試期間只能留在速度模式，回傳 0。進入力矩模式時不改 IQREF
+static uint8_t Mode_Set(uint8_t mode)
+{
+  if (mode == ctrl_mode) {
+    return 1;
+  }
+  // 電流環測試只在速度模式下進行
+  if (itest_mode != ITEST_OFF) {
+    return 0;
+  }
+  // MIT 與力矩模式沒有在跑速度環，積分還停在進入之前
+  if (ctrl_mode == CTRL_MODE_TRQ || (ctrl_mode == CTRL_MODE_POS && pos_type == POS_TYPE_MIT)) {
+    PIDController_reset(&PID__velocity);
+  }
+  if (mode == CTRL_MODE_POS) {
+    Pos_Enter();
+  } else if (mode == CTRL_MODE_TRQ) {
+    ctrl_mode = CTRL_MODE_TRQ;
+  } else {
+    speed_Target = 0.f;  // 切回速度模式時停在原地，要轉動再下 SET SPEED
+    ctrl_mode = CTRL_MODE_VEL;
+  }
+  return 1;
+}
+
 // MODE / ANGLE / MOVE / POSDIV / POSTYPE：不是單純寫入一個 float 的參數。name 是這幾個之一時回傳 1 (已回應)
 static uint8_t Pos_ParamSet(const char *name, float value)
 {
   char msg[48];
   if (strcmp(name, "MODE") == 0) {
-    // 後代的 MODE 2 ~ 4 (棘輪 / 限位 / 無摩擦) 這一代還沒有
-    if (value != CTRL_MODE_VEL && value != CTRL_MODE_POS) {
+    // 後代的 MODE 2 ~ 4 (棘輪 / 限位 / 無摩擦) 這一代還沒有；MODE 5 (力矩) 這一代才有
+    if (value != CTRL_MODE_VEL && value != CTRL_MODE_POS && value != CTRL_MODE_TRQ) {
       Cmd_Reply("[PARAM] ERR PARAM");
       return 1;
     }
     if (value != ctrl_mode) {
-      // 電流環測試只在速度模式下進行
-      if (value != CTRL_MODE_VEL && itest_mode != ITEST_OFF) {
+      if (!Mode_Set((uint8_t)value)) {
         Cmd_Reply("[PARAM] BUSY");
         return 1;
       }
-      if (value == CTRL_MODE_POS) {
-        Pos_Enter();
-      } else {
-        speed_Target = 0.f;  // 切回速度模式時停在原地，要轉動再下 SET SPEED
-        if (pos_type == POS_TYPE_MIT) {
-          PIDController_reset(&PID__velocity);  // MIT 沒有在跑速度環，積分還停在進入之前
-        }
-        ctrl_mode = CTRL_MODE_VEL;
+      if (value == CTRL_MODE_TRQ) {
+        trq_iq = 0.f;  // 以 SET MODE 5 進入時從 0 開始
+        can_trq_live = 0;
       }
     }
     snprintf(msg, sizeof(msg), "[PARAM] MODE=%u", ctrl_mode);
+    Cmd_Reply(msg);
+    return 1;
+  }
+  if (strcmp(name, "IQREF") == 0) {
+    // 不在力矩模式時自動切過去 (同 ANGLE)。文字指令設的值不會逾時歸零
+    if (!Mode_Set(CTRL_MODE_TRQ)) {
+      Cmd_Reply("[PARAM] BUSY");
+      return 1;
+    }
+    __disable_irq();
+    trq_iq = value;
+    can_trq_live = 0;
+    __enable_irq();
+    snprintf(msg, sizeof(msg), "[PARAM] IQREF=%.6g", value);
     Cmd_Reply(msg);
     return 1;
   }
@@ -1620,6 +1754,26 @@ static void Param_Set(char *args)
     Cmd_Reply(msg);
     return;
   }
+  uint8_t is_rpt = (strcmp(args, "CANRPT") == 0);
+  if (is_rpt || strcmp(args, "CANID") == 0) {
+    // 立即生效並寫進 EEPROM；寫入失敗時 RAM 內的值仍然生效，另外回 [EE] ERR WRITE
+    if (value != floorf(value) || (is_rpt ? (value < 0 || value > CAN_RPT_MAX) : (value < 1 || value > CAN_CMD_ID_MAX))) {
+      Cmd_Reply("[PARAM] ERR PARAM");
+      return;
+    }
+    if (is_rpt) {
+      can_rpt_ms = (uint16_t)value;
+    } else {
+      can_id = (uint16_t)value;
+      CAN_Filter_Config();
+    }
+    snprintf(msg, sizeof(msg), "[PARAM] %s=%u", args, (unsigned)(is_rpt ? can_rpt_ms : can_id));
+    Cmd_Reply(msg);
+    if (Can_Save() != HAL_OK) {
+      Cmd_Reply("[EE] ERR WRITE");
+    }
+    return;
+  }
   float *var = Param_Find(args);
   if (var == NULL) {
     Cmd_Reply("[PARAM] ERR PARAM");
@@ -1682,6 +1836,12 @@ static void Param_Get(const char *name)
     snprintf(msg, sizeof(msg), "[PARAM] IDQTF=%.6g", idq_tf * 1e3f);
   } else if (strcmp(name, "ITEST") == 0) {
     snprintf(msg, sizeof(msg), "[PARAM] ITEST=%u END=%u", itest_mode, itest_end);
+  } else if (strcmp(name, "IQREF") == 0) {
+    snprintf(msg, sizeof(msg), "[PARAM] IQREF=%.6g", trq_iq);
+  } else if (strcmp(name, "CANID") == 0) {
+    snprintf(msg, sizeof(msg), "[PARAM] CANID=%u", can_id);
+  } else if (strcmp(name, "CANRPT") == 0) {
+    snprintf(msg, sizeof(msg), "[PARAM] CANRPT=%u", can_rpt_ms);
   } else {
     msg[0] = '\0';
   }
@@ -1726,6 +1886,9 @@ static void Out_Run(void)
 {
   if (out_state != OUT_RUN) {
     speed_Target = 0.f;
+    if (!can_trq_live) {
+      trq_iq = 0.f;  // 力矩也從 0 開始；CAN 力矩命令觸發的 RUN 則沿用剛收到的值
+    }
     for (int i = 0; i < CFG_PID_N; i++) {
       PIDController_reset(cfg_pid[i]);
     }
@@ -2104,7 +2267,7 @@ static void Foc_Slot0(void)
 static void Foc_Slot1(uint8_t run)
 {
   uint8_t pos = (ctrl_mode == CTRL_MODE_POS);
-  if (!run || (pos && pos_type == POS_TYPE_MIT)) {
+  if (!run || (pos && pos_type == POS_TYPE_MIT) || ctrl_mode == CTRL_MODE_TRQ) {
     vel_cmd_lp = vel_cmd_now = 0.f;
     log_speed_cmd = 0.f;
     return;
@@ -2128,6 +2291,10 @@ static void Foc_Slot2(uint8_t run)
     uq_Target = 0.f;
   } else if (itest_mode != ITEST_OFF) {
     return;  // 電流環測試取代速度環，Iq 命令由 Itest_Process() 給
+  } else if (ctrl_mode == CTRL_MODE_TRQ) {
+    // 力矩模式：IQREF 直接當 Iq 命令，限幅同速度環的輸出 (VEL.LIMIT)
+    float limit = PID__velocity.limit;
+    uq_Target = constrain(trq_iq, -limit, limit);
   } else if (ctrl_mode == CTRL_MODE_POS && pos_type == POS_TYPE_MIT) {
     // MIT：彈簧 (MIT.KP，A/度) + 阻尼 (MIT.KD，A/(圈/秒)) 直接算 Iq，限幅同速度環的輸出 (VEL.LIMIT)
     float limit = PID__velocity.limit;
@@ -2328,6 +2495,9 @@ static void Foc_Step(uint16_t a1, uint16_t a2)
   // Clarke：α = CH1、β = (2·CH2 + CH1) / √3 (1/√3 = 18919 / 32768)；Park
   int32_t ia = i1;
   int32_t ib = Mul_Q15(2 * i2 + i1, 18919);
+#if PHASE_SWAP
+  ib = -ib;
+#endif
   int32_t id = (int32_t)(((int64_t)ia * cs + (int64_t)ib * sn) >> 15);
   int32_t iq = (int32_t)(((int64_t)ib * cs - (int64_t)ia * sn) >> 15);
   if (idq_lpf) {
@@ -2381,7 +2551,11 @@ static void Foc_Step(uint16_t a1, uint16_t a2)
   va_fix = va;
   vb_fix = vb;
   // 電壓單位是比較值 / 16；β 乘 √3/2 (28378 / 32768) 給 SVPWM
+#if PHASE_SWAP
+  Svpwm_Counts(va >> V_SHIFT, Mul_Q15(-vb, 28378) >> V_SHIFT);
+#else
   Svpwm_Counts(va >> V_SHIFT, Mul_Q15(vb, 28378) >> V_SHIFT);
+#endif
   Log_Sample();
 }
 
@@ -2406,6 +2580,37 @@ void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
         deviceMode = DeviceMode_SpeedMode;
       }
     }
+    // 平衡車的力矩命令：byte2~5 float = Iq (A)。不在力矩模式或輸出關閉時，由主迴圈切到 MODE 5 並 RUN
+    else if (RxData[0] == SET_IQ && RxData[1] == Set_TargetVale && RxHeader.DLC >= 6) {
+      float iq;
+      memcpy(&iq, &RxData[2], sizeof(float));
+      if (isfinite(iq)) {
+        trq_iq = iq;
+        can_trq_tick = HAL_GetTick();
+        can_trq_live = 1;
+        if (ctrl_mode != CTRL_MODE_TRQ || out_state != OUT_RUN) {
+          can_trq_req = 1;
+        }
+      }
+    }
+}
+
+// 主迴圈呼叫：CAN 力矩命令要求的模式切換與 RUN (中斷內不做)
+static void Can_Process(void)
+{
+  if (!can_trq_req) {
+    return;
+  }
+  can_trq_req = 0;
+  if (ctrl_mode != CTRL_MODE_TRQ) {
+    if (!Mode_Set(CTRL_MODE_TRQ)) {
+      return;  // 電流環測試中，不切換
+    }
+    Cmd_Reply("[PARAM] MODE=5");
+  }
+  if (out_state != OUT_RUN) {
+    Out_Run();
+  }
 }
 /* USER CODE END 4 */
 
